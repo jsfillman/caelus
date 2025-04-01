@@ -1,283 +1,297 @@
+from pyo import *
 import mido
 from threading import Thread
-from pyo import *
 
-# Boot the audio server with stereo output
-s = Server(nchnls=2).boot()
-s.start()
-
-# === Control signals ===
-pitch = Sig(440.0)
-velocity = Sig(0.0)
-aftertouch = Sig(0.0)
-
-# === OPERATOR 1 (Modulator) ===
-# Create controls with default values for e-piano sound
-op1_ratio = Sig(3.0)          # Higher ratio for bell-like quality
-op1_index = Sig(1.0)          # Start with modest index, but allow higher values via slider
-op1_freq_offset = Sig(0.0)    # No offset needed
-
-# Envelope for Operator 1 - quick attack, longer decay, low sustain (bell-like)
-op1_env = Adsr(attack=0.005, decay=1.5, sustain=0.1, release=0.8, dur=1, mul=1.0)
-
-# Ramp parameters for Operator 1
-op1_freq_ramp_start = Sig(0.0)
-op1_freq_ramp_end = Sig(0.0)
-op1_freq_ramp_time = Sig(1.0)
-
-op1_amp_ramp_start = Sig(1.0)
-op1_amp_ramp_end = Sig(0.5)  # Decay in modulation for classic DX e-piano character
-op1_amp_ramp_time = Sig(1.2)
-
-# Create the Linseg objects for Operator 1
-op1_freq_ramp = Linseg([(0, 0), (1, 0)])
-op1_amp_ramp = Linseg([(0, 1.0), (1, 0.5)])
-
-# === OPERATOR 2 (Second Modulator) ===
-# Create controls with default values
-op2_ratio = Sig(1.0)          # 1:1 ratio with carrier for classic piano tone
-op2_index = Sig(0.8)          # Start with modest index, but allow higher values via slider
-op2_freq_offset = Sig(0.0)    # No offset
-
-# Envelope for Operator 2 - fast attack, medium decay
-op2_env = Adsr(attack=0.01, decay=0.8, sustain=0.4, release=0.6, dur=1, mul=1.0)
-
-# Ramp parameters for Operator 2
-op2_freq_ramp_start = Sig(0.0)
-op2_freq_ramp_end = Sig(0.0)
-op2_freq_ramp_time = Sig(1.0)
-
-op2_amp_ramp_start = Sig(1.0)
-op2_amp_ramp_end = Sig(0.7)  # Slight decay
-op2_amp_ramp_time = Sig(0.9)
-
-# Create the Linseg objects for Operator 2
-op2_freq_ramp = Linseg([(0, 0), (1, 0)])
-op2_amp_ramp = Linseg([(0, 1.0), (1, 0.7)])
-
-# === CARRIER ===
-# Carrier ramp parameters
-car_freq_ramp_start = Sig(0.0)
-car_freq_ramp_end = Sig(0.0)
-car_freq_ramp_time = Sig(1.0)
-
-car_amp_ramp_start = Sig(1.0)
-car_amp_ramp_end = Sig(0.8)  # Slight decay for more natural piano sound
-car_amp_ramp_time = Sig(1.5)
-
-# Create the Linseg objects for Carrier
-car_freq_ramp = Linseg([(0, 0), (1, 0)])
-car_amp_ramp = Linseg([(0, 1.0), (1, 0.8)])
-
-# Function to update all ramps
-def update_ramps():
-    # Update Operator 1 ramps
-    op1_freq_time = max(0.01, op1_freq_ramp_time.get())
-    op1_amp_time = max(0.01, op1_amp_ramp_time.get())
+class Oscillator:
+    def __init__(self, name, role="operator", ratio=1.0, index=1.0, freq_offset=0.0):
+        # Basic parameters
+        self.name = name
+        self.role = role
+        self.ratio = Sig(ratio)
+        self.index = Sig(index)
+        self.freq_offset = Sig(freq_offset)
+        
+        # Waveform
+        self.table = HarmTable([1])  # Default to sine wave
+        
+        # ADSR envelopes
+        self.freq_env = Adsr(attack=0.01, decay=0.1, sustain=0.5, release=0.3, dur=1, mul=50)
+        self.amp_env = Adsr(attack=0.01, decay=0.1, sustain=0.5, release=0.3, dur=1, mul=0.5)
+        
+        # Envelope delays
+        self.freq_delay = Sig(0.0)
+        self.depth_delay = Sig(0.0)
+        
+        # Frequency ramp parameters
+        self.freq_ramp_start = Sig(0.0)
+        self.freq_ramp_end = Sig(0.0)
+        self.freq_ramp_time = Sig(1.0)
+        self.freq_ramp = Linseg([(0, self.freq_ramp_start.value), 
+                                (self.freq_ramp_time.value, self.freq_ramp_end.value)])
+        
+        # Amplitude ramp parameters
+        self.amp_ramp_start = Sig(1.0)
+        self.amp_ramp_end = Sig(1.0)
+        self.amp_ramp_time = Sig(1.0)
+        self.amp_ramp = Linseg([(0, self.amp_ramp_start.value), 
+                               (self.amp_ramp_time.value, self.amp_ramp_end.value)])
+        
+        # Phase control
+        self.phase = Sig(0.0)
+        
+        # The oscillator itself - will be properly connected in the synth class
+        self.osc = None
+        self.freq = None
+        self.amp = None
+        
+    def update_ramps(self):
+        """Update ramp segments based on current parameter values"""
+        # Update frequency ramp
+        freq_time = max(0.01, self.freq_ramp_time.get())
+        self.freq_ramp.setList([
+            (0, self.freq_ramp_start.get()),
+            (freq_time, self.freq_ramp_end.get())
+        ])
+        
+        # Update amplitude ramp
+        amp_time = max(0.01, self.amp_ramp_time.get())
+        self.amp_ramp.setList([
+            (0, self.amp_ramp_start.get()),
+            (amp_time, self.amp_ramp_end.get())
+        ])
     
-    op1_freq_ramp.setList([
-        (0, op1_freq_ramp_start.get()), 
-        (op1_freq_time, op1_freq_ramp_end.get())
-    ])
+    def play(self):
+        """Trigger the oscillator"""
+        # Play envelopes with delays
+        CallAfter(self.freq_env.play, self.freq_delay.value)
+        CallAfter(self.amp_env.play, self.depth_delay.value)
+        
+        # Reset and play ramps
+        self.freq_ramp.play()
+        self.amp_ramp.play()
     
-    op1_amp_ramp.setList([
-        (0, op1_amp_ramp_start.get()), 
-        (op1_amp_time, op1_amp_ramp_end.get())
-    ])
+    def stop(self):
+        """Release the oscillator"""
+        CallAfter(self.freq_env.stop, self.freq_delay.value)
+        CallAfter(self.amp_env.stop, self.depth_delay.value)
+        # Ramps complete on their own
     
-    # Update Operator 2 ramps
-    op2_freq_time = max(0.01, op2_freq_ramp_time.get())
-    op2_amp_time = max(0.01, op2_amp_ramp_time.get())
+    def setup_gui(self):
+        """Create GUI controls for this oscillator"""
+        self.ratio.ctrl(title=f"{self.name} Ratio")
+        self.index.ctrl(title=f"{self.name} Index")
+        self.freq_offset.ctrl(title=f"{self.name} Freq Offset")
+        
+        self.freq_env.ctrl(title=f"{self.name} Freq Env")
+        self.amp_env.ctrl(title=f"{self.name} Amp Env")
+        
+        self.freq_delay.ctrl(title=f"{self.name} Freq Delay (sec)")
+        self.depth_delay.ctrl(title=f"{self.name} Depth Delay (sec)")
+        
+        self.freq_ramp_start.ctrl(title=f"{self.name} Freq Ramp Start")
+        self.freq_ramp_end.ctrl(title=f"{self.name} Freq Ramp End")
+        self.freq_ramp_time.ctrl(title=f"{self.name} Freq Ramp Time (sec)")
+        
+        self.amp_ramp_start.ctrl(title=f"{self.name} Amp Ramp Start")
+        self.amp_ramp_end.ctrl(title=f"{self.name} Amp Ramp End")
+        self.amp_ramp_time.ctrl(title=f"{self.name} Amp Ramp Time (sec)")
+        
+        self.phase.ctrl(title=f"{self.name} Phase")
+
+class MegaPartial2Op:
+    def __init__(self):
+        # Boot the audio server with stereo output
+        self.s = Server(nchnls=2).boot()
+        self.s.start()
+        
+        # === Control signals ===
+        self.pitch = Sig(440.0)
+        self.velocity = Sig(0.0)
+        self.aftertouch = Sig(0.0)
+        
+        # Create operators with the unified Oscillator class
+        self.op1 = Oscillator("Op1", role="modulator", ratio=3.0, index=1.0)
+        self.op2 = Oscillator("Op2", role="modulator", ratio=1.0, index=0.8)
+        self.carrier = Oscillator("Carrier", role="carrier", ratio=1.0, index=0.0)
+        
+        # Configure specific parameters to match original presets
+        # Operator 1
+        self.op1.freq_env = Adsr(attack=0.005, decay=1.5, sustain=0.1, release=0.8, dur=1, mul=1.0)
+        self.op1.amp_ramp_end.value = 0.5
+        self.op1.amp_ramp_time.value = 1.2
+        
+        # Operator 2
+        self.op2.freq_env = Adsr(attack=0.01, decay=0.8, sustain=0.4, release=0.6, dur=1, mul=1.0) 
+        self.op2.amp_ramp_end.value = 0.7
+        self.op2.amp_ramp_time.value = 0.9
+        
+        # Carrier
+        self.carrier.amp_env = Adsr(attack=0.01, decay=0.1, sustain=0.8, release=0.5, dur=1, mul=0.15)
+        self.carrier.amp_ramp_end.value = 0.8
+        self.carrier.amp_ramp_time.value = 1.5
+        
+        # Set up triggers to update ramps when parameters change
+        param_trigger = Change(
+            self.op1.freq_ramp_start + self.op1.freq_ramp_end + self.op1.freq_ramp_time + 
+            self.op1.amp_ramp_start + self.op1.amp_ramp_end + self.op1.amp_ramp_time +
+            self.op2.freq_ramp_start + self.op2.freq_ramp_end + self.op2.freq_ramp_time + 
+            self.op2.amp_ramp_start + self.op2.amp_ramp_end + self.op2.amp_ramp_time +
+            self.carrier.freq_ramp_start + self.carrier.freq_ramp_end + self.carrier.freq_ramp_time + 
+            self.carrier.amp_ramp_start + self.carrier.amp_ramp_end + self.carrier.amp_ramp_time
+        ).play()
+        
+        self.param_updater = TrigFunc(param_trigger, self.update_all_ramps)
+        
+        # Set up the FM chain and output
+        self.setup_chain()
+        
+        # Set up GUI
+        self.setup_gui()
+        
+        # Initialize active notes list for MIDI
+        self.active_notes = []
+        
+        # Update ramps once to initialize
+        self.update_all_ramps()
+        
+        # Launch MIDI handler
+        Thread(target=self.midi_loop, daemon=True).start()
     
-    op2_freq_ramp.setList([
-        (0, op2_freq_ramp_start.get()), 
-        (op2_freq_time, op2_freq_ramp_end.get())
-    ])
+    def update_all_ramps(self):
+        """Update all operator ramps"""
+        self.op1.update_ramps()
+        self.op2.update_ramps()
+        self.carrier.update_ramps()
     
-    op2_amp_ramp.setList([
-        (0, op2_amp_ramp_start.get()), 
-        (op2_amp_time, op2_amp_ramp_end.get())
-    ])
+    def setup_chain(self):
+        """Connect the operators in the FM chain"""
+        # Operator 1 calculations
+        self.op1.base_freq = self.pitch * self.op1.ratio + self.op1.freq_offset
+        self.op1.freq = self.op1.base_freq + (self.op1.freq_ramp * self.pitch)
+        self.op1.amp = self.pitch * self.op1.index * self.op1.amp_env * self.op1.amp_ramp
+        self.op1.osc = Sine(freq=self.op1.freq, mul=self.op1.amp)
+        
+        # Operator 2 calculations
+        self.op2.base_freq = self.pitch * self.op2.ratio + self.op2.freq_offset
+        self.op2.freq = self.op2.base_freq + (self.op2.freq_ramp * self.pitch) + self.op1.osc
+        self.op2.amp = self.pitch * self.op2.index * self.op2.amp_env * self.op2.amp_ramp
+        self.op2.osc = Sine(freq=self.op2.freq, mul=self.op2.amp)
+        
+        # Carrier calculations
+        self.carrier.base_freq = self.pitch
+        self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + self.op2.osc
+        self.carrier.osc = Sine(
+            freq=self.carrier.freq,
+            mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
+        )
+        
+        # === STEREO OUTPUT WITH CENTER PANNING ===
+        self.panner = Pan(self.carrier.osc, outs=2, pan=0.5)
+        
+        # === AUDIO OUTPUT WITH LIMITER ===
+        self.limiter = Compress(
+            input=self.panner,
+            thresh=-12,
+            ratio=20,
+            risetime=0.001,
+            falltime=0.1,
+            lookahead=5,
+            knee=0.5,
+            outputAmp=False
+        )
+        
+        self.final = self.limiter * 0.7
+        self.final.out()
     
-    # Update Carrier ramps
-    car_freq_time = max(0.01, car_freq_ramp_time.get())
-    car_amp_time = max(0.01, car_amp_ramp_time.get())
+    def play_note(self, note, velocity_val):
+        """Play a note with the given velocity"""
+        freq_val = 440.0 * (2 ** ((note - 69) / 12))
+        self.pitch.value = freq_val
+        self.velocity.value = velocity_val / 127
+        
+        # Play operator envelopes
+        self.carrier.amp_env.play()
+        self.op1.freq_env.play()
+        self.op1.amp_env.play()
+        self.op2.freq_env.play()
+        self.op2.amp_env.play()
+        
+        # Force an update of the ramps
+        self.update_all_ramps()
+        
+        # Play operator ramps
+        self.op1.freq_ramp.play()
+        self.op1.amp_ramp.play()
+        self.op2.freq_ramp.play()
+        self.op2.amp_ramp.play()
+        self.carrier.freq_ramp.play()
+        self.carrier.amp_ramp.play()
     
-    car_freq_ramp.setList([
-        (0, car_freq_ramp_start.get()), 
-        (car_freq_time, car_freq_ramp_end.get())
-    ])
+    def stop_note(self):
+        """Stop the current note"""
+        # Stop all envelopes
+        self.carrier.amp_env.stop()
+        self.op1.freq_env.stop()
+        self.op1.amp_env.stop()
+        self.op2.freq_env.stop()
+        self.op2.amp_env.stop()
     
-    car_amp_ramp.setList([
-        (0, car_amp_ramp_start.get()), 
-        (car_amp_time, car_amp_ramp_end.get())
-    ])
-
-# Create triggers to update ramps when parameters change
-param_trigger = Change(
-    op1_freq_ramp_start + op1_freq_ramp_end + op1_freq_ramp_time + 
-    op1_amp_ramp_start + op1_amp_ramp_end + op1_amp_ramp_time +
-    op2_freq_ramp_start + op2_freq_ramp_end + op2_freq_ramp_time + 
-    op2_amp_ramp_start + op2_amp_ramp_end + op2_amp_ramp_time +
-    car_freq_ramp_start + car_freq_ramp_end + car_freq_ramp_time + 
-    car_amp_ramp_start + car_amp_ramp_end + car_amp_ramp_time
-).play()
-param_updater = TrigFunc(param_trigger, update_ramps)
-
-# === BUILD THE FM CHAIN (OPERATOR 1 -> OPERATOR 2 -> CARRIER) ===
-# Operator 1 calculations
-op1_base_freq = pitch * op1_ratio + op1_freq_offset
-op1_freq = op1_base_freq + (op1_freq_ramp * pitch)
-# Scale the modulation amount with pitch for consistent effect across keyboard
-op1_amp = pitch * op1_index * op1_env * op1_amp_ramp
-op1_osc = Sine(freq=op1_freq, mul=op1_amp)
-
-# Operator 2 calculations
-op2_base_freq = pitch * op2_ratio + op2_freq_offset
-op2_freq = op2_base_freq + (op2_freq_ramp * pitch) + op1_osc
-# Scale the modulation amount with pitch for consistent effect across keyboard
-op2_amp = pitch * op2_index * op2_env * op2_amp_ramp
-op2_osc = Sine(freq=op2_freq, mul=op2_amp)
-
-# Carrier calculations
-carrier_base_freq = pitch
-carrier_freq = carrier_base_freq + (car_freq_ramp * pitch) + op2_osc
-carrier_amp_env = Adsr(attack=0.01, decay=0.1, sustain=0.8, release=0.5, dur=1, mul=0.15)
-carrier = Sine(
-    freq=carrier_freq,
-    mul=carrier_amp_env * velocity * (0.5 + aftertouch**2 * 2) * car_amp_ramp
-)
-
-# === STEREO OUTPUT WITH CENTER PANNING ===
-panner = Pan(carrier, outs=2, pan=0.5)
-
-# === AUDIO OUTPUT WITH LIMITER ===
-limiter = Compress(
-    input=panner,
-    thresh=-12,
-    ratio=20,
-    risetime=0.001,
-    falltime=0.1,
-    lookahead=5,
-    knee=0.5,
-    outputAmp=False
-)
-
-final = limiter * 0.7
-final.out()
-
-# === MIDI handler with last note priority ===
-# Keep track of active notes in a list (ordered by time pressed)
-active_notes = []
-
-def play_note(note, velocity_val):
-    freq_val = 440.0 * (2 ** ((note - 69) / 12))
-    pitch.value = freq_val
-    velocity.value = velocity_val / 127
-    
-    # Play envelopes
-    carrier_amp_env.play()
-    op1_env.play()
-    op2_env.play()
-    
-    # Force an update of the ramps with current values
-    update_ramps()
-    
-    # Reset and play all ramps for each new note
-    op1_freq_ramp.play()
-    op1_amp_ramp.play()
-    op2_freq_ramp.play()
-    op2_amp_ramp.play()
-    car_freq_ramp.play()
-    car_amp_ramp.play()
-
-def stop_note():
-    # Stop envelopes
-    carrier_amp_env.stop()
-    op1_env.stop()
-    op2_env.stop()
-
-def midi_loop():
-    port_name = None
-    for name in mido.get_input_names():
-        print("→", name)
-        if "Xkey" in name:
-            port_name = name
-            break
-    if not port_name:
-        print("❌ Xkey not found. Using default.")
-        port_name = mido.get_input_names()[0]
-
-    print(f"🎹 Listening on: {port_name}")
-
-    with mido.open_input(port_name) as port:
-        for msg in port:
-            if msg.type == 'note_on' and msg.velocity > 0:
-                # Add the new note to our active notes list
-                if msg.note not in active_notes:
-                    active_notes.append(msg.note)
-                
-                # Play the most recently pressed note (last in the list)
-                play_note(active_notes[-1], msg.velocity)
-                
-            elif msg.type in ['note_off', 'note_on'] and msg.velocity == 0:
-                # Remove the note from active notes
-                if msg.note in active_notes:
-                    active_notes.remove(msg.note)
-                
-                # If we still have active notes, play the most recent one
-                if active_notes:
-                    # Get the last pressed note still active
-                    last_note = active_notes[-1]
-                    play_note(last_note, 100)  # Use default velocity of 100
-                else:
-                    # No notes left, stop sound
-                    stop_note()
+    def midi_loop(self):
+        """Handle MIDI input"""
+        port_name = None
+        for name in mido.get_input_names():
+            print("→", name)
+            if "Xkey" in name:
+                port_name = name
+                break
+        if not port_name:
+            print("❌ Xkey not found. Using default.")
+            port_name = mido.get_input_names()[0]
+        
+        print(f"🎹 Listening on: {port_name}")
+        
+        with mido.open_input(port_name) as port:
+            for msg in port:
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    # Add the new note to our active notes list
+                    if msg.note not in self.active_notes:
+                        self.active_notes.append(msg.note)
                     
-            elif msg.type == 'polytouch':
-                # Apply aftertouch only if it's for the currently playing note
-                if active_notes and msg.note == active_notes[-1]:
-                    aftertouch.value = msg.value / 127
+                    # Play the most recently pressed note (last in the list)
+                    self.play_note(self.active_notes[-1], msg.velocity)
+                    
+                elif msg.type in ['note_off', 'note_on'] and msg.velocity == 0:
+                    # Remove the note from active notes
+                    if msg.note in self.active_notes:
+                        self.active_notes.remove(msg.note)
+                    
+                    # If we still have active notes, play the most recent one
+                    if self.active_notes:
+                        # Get the last pressed note still active
+                        last_note = self.active_notes[-1]
+                        self.play_note(last_note, 100)  # Use default velocity of 100
+                    else:
+                        # No notes left, stop sound
+                        self.stop_note()
+                        
+                elif msg.type == 'polytouch':
+                    # Apply aftertouch only if it's for the currently playing note
+                    if self.active_notes and msg.note == self.active_notes[-1]:
+                        self.aftertouch.value = msg.value / 127
+    
+    def setup_gui(self):
+        """Set up the GUI controls"""
+        # Operator 1 GUI
+        self.op1.setup_gui()
+        
+        # Operator 2 GUI
+        self.op2.setup_gui()
+        
+        # Carrier GUI
+        self.carrier.setup_gui()
+        self.carrier.amp_env.ctrl(title="Carrier Amplitude Envelope")
 
-# === GUI CONTROLS ===
-# Operator 1 controls
-op1_ratio.ctrl(title="Op1 Ratio")
-op1_index.ctrl(title="Op1 Index (modulation depth)")
-op1_freq_offset.ctrl(title="Op1 Freq Offset (Hz)")
-op1_env.ctrl(title="Op1 Envelope")
-op1_freq_ramp_start.ctrl(title="Op1 Freq Ramp Start")
-op1_freq_ramp_end.ctrl(title="Op1 Freq Ramp End")
-op1_freq_ramp_time.ctrl(title="Op1 Freq Ramp Time (sec)")
-op1_amp_ramp_start.ctrl(title="Op1 Amp Ramp Start")
-op1_amp_ramp_end.ctrl(title="Op1 Amp Ramp End")
-op1_amp_ramp_time.ctrl(title="Op1 Amp Ramp Time (sec)")
-
-# Operator 2 controls
-op2_ratio.ctrl(title="Op2 Ratio")
-op2_index.ctrl(title="Op2 Index (modulation depth)")
-op2_freq_offset.ctrl(title="Op2 Freq Offset (Hz)")
-op2_env.ctrl(title="Op2 Envelope")
-op2_freq_ramp_start.ctrl(title="Op2 Freq Ramp Start")
-op2_freq_ramp_end.ctrl(title="Op2 Freq Ramp End")
-op2_freq_ramp_time.ctrl(title="Op2 Freq Ramp Time (sec)")
-op2_amp_ramp_start.ctrl(title="Op2 Amp Ramp Start")
-op2_amp_ramp_end.ctrl(title="Op2 Amp Ramp End")
-op2_amp_ramp_time.ctrl(title="Op2 Amp Ramp Time (sec)")
-
-# Carrier controls
-car_freq_ramp_start.ctrl(title="Carrier Freq Ramp Start")
-car_freq_ramp_end.ctrl(title="Carrier Freq Ramp End")
-car_freq_ramp_time.ctrl(title="Carrier Freq Ramp Time (sec)")
-car_amp_ramp_start.ctrl(title="Carrier Amp Ramp Start")
-car_amp_ramp_end.ctrl(title="Carrier Amp Ramp End")
-car_amp_ramp_time.ctrl(title="Carrier Amp Ramp Time (sec)")
-carrier_amp_env.ctrl(title="Carrier Amplitude Envelope")
-
-# Run update_ramps once to initialize with starting values
-update_ramps()
-
-# Launch MIDI handler
-Thread(target=midi_loop, daemon=True).start()
-
-# GUI
-s.gui(locals())
+# Run the synthesizer
+if __name__ == "__main__":
+    synth = MegaPartial2Op()
+    synth.s.gui(locals())

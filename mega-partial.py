@@ -169,22 +169,28 @@ class MegaPartial2Op:
         self.op1.base_freq = self.pitch * self.op1.ratio + self.op1.freq_offset
         self.op1.freq = self.op1.base_freq + (self.op1.freq_ramp * self.pitch)
         self.op1.amp = self.pitch * self.op1.index * self.op1.amp_env * self.op1.amp_ramp
-        self.op1.osc = Sine(freq=self.op1.freq, mul=self.op1.amp)
+        # Use Osc with HarmTable instead of Sine
+        self.op1.osc = Osc(table=self.op1.table, freq=self.op1.freq, mul=self.op1.amp, phase=self.op1.phase)
         
         # Operator 2 calculations
         self.op2.base_freq = self.pitch * self.op2.ratio + self.op2.freq_offset
         self.op2.freq = self.op2.base_freq + (self.op2.freq_ramp * self.pitch) + self.op1.osc
         self.op2.amp = self.pitch * self.op2.index * self.op2.amp_env * self.op2.amp_ramp
-        self.op2.osc = Sine(freq=self.op2.freq, mul=self.op2.amp)
+        # Use Osc with HarmTable instead of Sine
+        self.op2.osc = Osc(table=self.op2.table, freq=self.op2.freq, mul=self.op2.amp, phase=self.op2.phase)
         
         # Carrier calculations
         self.carrier.base_freq = self.pitch
         self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + self.op2.osc
-        self.carrier.osc = Sine(
+        # Use Osc with HarmTable instead of Sine
+        self.carrier.osc = Osc(
+            table=self.carrier.table,
             freq=self.carrier.freq,
-            mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
+            mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp,
+            phase=self.carrier.phase
         )
         
+        # Rest of the method remains unchanged
         # === STEREO OUTPUT WITH CENTER PANNING ===
         self.panner = Pan(self.carrier.osc, outs=2, pan=0.5)
         
