@@ -1,7 +1,7 @@
-import yaml
-import os
 from pyo import *
 import mido
+import yaml
+import os
 from threading import Thread
 
 class Oscillator:
@@ -181,7 +181,7 @@ class Oscillator:
         self.update_ramps()
 
 
-class MegaPartial2Op:
+class CaelusSynth:
     def __init__(self, preset_file="caelus_preset.yaml"):
         # Store preset file path
         self.preset_file = preset_file
@@ -194,41 +194,41 @@ class MegaPartial2Op:
         self.velocity = Sig(0.0)
         self.aftertouch = Sig(0.0)
         
-        # Create operators with the unified Oscillator class
-        self.op1 = Oscillator("Op1", role="modulator", ratio=3.0, index=1.0)
-        self.op2 = Oscillator("Op2", role="modulator", ratio=1.0, index=0.8)
+        # List to hold all operators (modulators)
+        self.operators = []
+        
+        # Create carrier (always exists)
         self.carrier = Oscillator("Carrier", role="carrier", ratio=1.0, index=0.0)
         
-        # Configure specific parameters to match original presets
-        # Operator 1
-        self.op1.freq_env = Adsr(attack=0.005, decay=1.5, sustain=0.1, release=0.8, dur=1, mul=1.0)
-        self.op1.amp_ramp_end.value = 0.5
-        self.op1.amp_ramp_time.value = 1.2
-        
-        # Operator 2
-        self.op2.freq_env = Adsr(attack=0.01, decay=0.8, sustain=0.4, release=0.6, dur=1, mul=1.0) 
-        self.op2.amp_ramp_end.value = 0.7
-        self.op2.amp_ramp_time.value = 0.9
-        
-        # Carrier
+        # Configure carrier defaults
         self.carrier.amp_env = Adsr(attack=0.01, decay=0.1, sustain=0.8, release=0.5, dur=1, mul=0.15)
         self.carrier.amp_ramp_end.value = 0.8
         self.carrier.amp_ramp_time.value = 1.5
         
+        # Add operator defaults (can be customized)
+        self.operator_defaults = [
+            {"name": "Op1", "ratio": 3.0, "index": 1.0, "amp_ramp_end": 0.5, "amp_ramp_time": 1.2,
+             "env": {"attack": 0.005, "decay": 1.5, "sustain": 0.1, "release": 0.8}},
+            {"name": "Op2", "ratio": 1.0, "index": 0.8, "amp_ramp_end": 0.7, "amp_ramp_time": 0.9,
+             "env": {"attack": 0.01, "decay": 0.8, "sustain": 0.4, "release": 0.6}},
+            {"name": "Op3", "ratio": 2.0, "index": 0.6, "amp_ramp_end": 0.6, "amp_ramp_time": 1.1,
+             "env": {"attack": 0.02, "decay": 1.2, "sustain": 0.3, "release": 0.5}},
+            {"name": "Op4", "ratio": 1.5, "index": 0.5, "amp_ramp_end": 0.4, "amp_ramp_time": 0.8,
+             "env": {"attack": 0.01, "decay": 0.6, "sustain": 0.5, "release": 0.7}},
+            {"name": "Op5", "ratio": 5.0, "index": 0.4, "amp_ramp_end": 0.3, "amp_ramp_time": 1.0,
+             "env": {"attack": 0.015, "decay": 1.0, "sustain": 0.2, "release": 0.6}},
+            {"name": "Op6", "ratio": 0.5, "index": 0.3, "amp_ramp_end": 0.2, "amp_ramp_time": 1.3,
+             "env": {"attack": 0.025, "decay": 0.9, "sustain": 0.3, "release": 0.9}},
+        ]
+        
+        # Initialize with a configurable number of operators
+        self.initialize_operators(num_operators=6)  # Changed to 6 operators
+        
         # Try to load preset parameters if file exists
         self.load_preset()
         
-        # Set up triggers to update ramps when parameters change
-        param_trigger = Change(
-            self.op1.freq_ramp_start + self.op1.freq_ramp_end + self.op1.freq_ramp_time + 
-            self.op1.amp_ramp_start + self.op1.amp_ramp_end + self.op1.amp_ramp_time +
-            self.op2.freq_ramp_start + self.op2.freq_ramp_end + self.op2.freq_ramp_time + 
-            self.op2.amp_ramp_start + self.op2.amp_ramp_end + self.op2.amp_ramp_time +
-            self.carrier.freq_ramp_start + self.carrier.freq_ramp_end + self.carrier.freq_ramp_time + 
-            self.carrier.amp_ramp_start + self.carrier.amp_ramp_end + self.carrier.amp_ramp_time
-        ).play()
-        
-        self.param_updater = TrigFunc(param_trigger, self.update_all_ramps)
+        # Setup parameter change triggers
+        self.setup_parameter_triggers()
         
         # Set up the FM chain and output
         self.setup_chain()
@@ -252,6 +252,57 @@ class MegaPartial2Op:
         # Start the server last
         self.s.start()
     
+    def initialize_operators(self, num_operators=4):
+        """Initialize a specific number of operators with default values"""
+        self.operators = []
+        
+        # Create operators based on defaults or up to num_operators
+        for i in range(min(num_operators, len(self.operator_defaults))):
+            defaults = self.operator_defaults[i]
+            op = Oscillator(
+                defaults["name"], 
+                role="modulator", 
+                ratio=defaults["ratio"], 
+                index=defaults["index"]
+            )
+            
+            # Set envelope parameters
+            env = defaults["env"]
+            op.freq_env = Adsr(
+                attack=env["attack"], 
+                decay=env["decay"], 
+                sustain=env["sustain"], 
+                release=env["release"], 
+                dur=1, 
+                mul=1.0
+            )
+            
+            # Set ramp parameters
+            op.amp_ramp_end.value = defaults["amp_ramp_end"]
+            op.amp_ramp_time.value = defaults["amp_ramp_time"]
+            
+            # Add to operators list
+            self.operators.append(op)
+    
+    def setup_parameter_triggers(self):
+        """Set up triggers to update ramps when parameters change"""
+        # Build a sum of all parameters that should trigger updates
+        trigger_sum = Sig(0)
+        
+        # Add operator parameters
+        for op in self.operators:
+            trigger_sum = trigger_sum + op.freq_ramp_start + op.freq_ramp_end + op.freq_ramp_time + \
+                         op.amp_ramp_start + op.amp_ramp_end + op.amp_ramp_time
+        
+        # Add carrier parameters
+        trigger_sum = trigger_sum + self.carrier.freq_ramp_start + self.carrier.freq_ramp_end + \
+                     self.carrier.freq_ramp_time + self.carrier.amp_ramp_start + \
+                     self.carrier.amp_ramp_end + self.carrier.amp_ramp_time
+        
+        # Create the trigger
+        param_trigger = Change(trigger_sum).play()
+        self.param_updater = TrigFunc(param_trigger, self.update_all_ramps)
+    
     def on_server_close(self):
         """Save the preset when the server is closed"""
         # Use a flag to prevent multiple calls
@@ -262,13 +313,14 @@ class MegaPartial2Op:
         
     def save_preset(self):
         """Save all parameters to a preset file"""
-        preset_data = {
-            "particle1": {
-                "op1": self.op1.get_parameters(),
-                "op2": self.op2.get_parameters(),
-                "carrier": self.carrier.get_parameters()
-            }
-        }
+        preset_data = {"particle1": {}}
+        
+        # Save operator parameters
+        for i, op in enumerate(self.operators):
+            preset_data["particle1"][f"op{i+1}"] = op.get_parameters()
+        
+        # Save carrier parameters
+        preset_data["particle1"]["carrier"] = self.carrier.get_parameters()
         
         try:
             with open(self.preset_file, 'w') as f:
@@ -287,29 +339,21 @@ class MegaPartial2Op:
             with open(self.preset_file, 'r') as f:
                 preset_data = yaml.safe_load(f)
             
-            # Try to load from the new structure
+            # Load from the structure
             if "particle1" in preset_data:
                 particle_data = preset_data["particle1"]
                 
-                if "op1" in particle_data:
-                    self.op1.load_parameters(particle_data["op1"])
+                # Load operator parameters
+                for i, op in enumerate(self.operators):
+                    key = f"op{i+1}"
+                    if key in particle_data:
+                        op.load_parameters(particle_data[key])
+                        print(f"Loaded {key} parameters")
                 
-                if "op2" in particle_data:
-                    self.op2.load_parameters(particle_data["op2"])
-                
+                # Load carrier parameters
                 if "carrier" in particle_data:
                     self.carrier.load_parameters(particle_data["carrier"])
-            
-            # Fallback to old structure if needed
-            elif "op1" in preset_data:
-                print("Loading from legacy preset format")
-                self.op1.load_parameters(preset_data["op1"])
-                
-                if "op2" in preset_data:
-                    self.op2.load_parameters(preset_data["op2"])
-                
-                if "carrier" in preset_data:
-                    self.carrier.load_parameters(preset_data["carrier"])
+                    print("Loaded Carrier parameters")
             
             print(f"Preset loaded from {self.preset_file}")
         except Exception as e:
@@ -317,27 +361,47 @@ class MegaPartial2Op:
     
     def update_all_ramps(self):
         """Update all operator ramps"""
-        self.op1.update_ramps()
-        self.op2.update_ramps()
+        for op in self.operators:
+            op.update_ramps()
         self.carrier.update_ramps()
     
     def setup_chain(self):
         """Connect the operators in the FM chain"""
-        # Operator 1 calculations
-        self.op1.base_freq = self.pitch * self.op1.ratio + self.op1.freq_offset
-        self.op1.freq = self.op1.base_freq + (self.op1.freq_ramp * self.pitch)
-        self.op1.amp = self.pitch * self.op1.index * self.op1.amp_env * self.op1.amp_ramp
-        self.op1.osc = Sine(freq=self.op1.freq, mul=self.op1.amp)
+        prev_osc = None
         
-        # Operator 2 calculations
-        self.op2.base_freq = self.pitch * self.op2.ratio + self.op2.freq_offset
-        self.op2.freq = self.op2.base_freq + (self.op2.freq_ramp * self.pitch) + self.op1.osc
-        self.op2.amp = self.pitch * self.op2.index * self.op2.amp_env * self.op2.amp_ramp
-        self.op2.osc = Sine(freq=self.op2.freq, mul=self.op2.amp)
+        # Set up each operator in the chain
+        for i, op in enumerate(self.operators):
+            # Calculate base frequency
+            op.base_freq = self.pitch * op.ratio + op.freq_offset
+            
+            # Calculate modulated frequency
+            if prev_osc is None:
+                # First operator has no input modulation
+                op.freq = op.base_freq + (op.freq_ramp * self.pitch)
+            else:
+                # Subsequent operators are modulated by previous operator
+                op.freq = op.base_freq + (op.freq_ramp * self.pitch) + prev_osc
+            
+            # Calculate amplitude
+            op.amp = self.pitch * op.index * op.amp_env * op.amp_ramp
+            
+            # Create oscillator
+            op.osc = Sine(freq=op.freq, mul=op.amp)
+            
+            # Set current oscillator as previous for next iteration
+            prev_osc = op.osc
         
-        # Carrier calculations
+        # Carrier setup - modulated by last operator if any exist
         self.carrier.base_freq = self.pitch
-        self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + self.op2.osc
+        
+        if self.operators:
+            # Carrier modulated by last operator
+            self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + self.operators[-1].osc
+        else:
+            # No operators, carrier unmodulated
+            self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch)
+        
+        # Carrier amplitude 
         self.carrier.osc = Sine(
             freq=self.carrier.freq,
             mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
@@ -367,32 +431,35 @@ class MegaPartial2Op:
         self.pitch.value = freq_val
         self.velocity.value = velocity_val / 127
         
-        # Play operator envelopes
+        # Play carrier envelope
         self.carrier.amp_env.play()
-        self.op1.freq_env.play()
-        self.op1.amp_env.play()
-        self.op2.freq_env.play()
-        self.op2.amp_env.play()
+        
+        # Play all operator envelopes
+        for op in self.operators:
+            op.freq_env.play()
+            op.amp_env.play()
         
         # Force an update of the ramps
         self.update_all_ramps()
         
-        # Play operator ramps
-        self.op1.freq_ramp.play()
-        self.op1.amp_ramp.play()
-        self.op2.freq_ramp.play()
-        self.op2.amp_ramp.play()
+        # Play carrier ramps
         self.carrier.freq_ramp.play()
         self.carrier.amp_ramp.play()
+        
+        # Play all operator ramps
+        for op in self.operators:
+            op.freq_ramp.play()
+            op.amp_ramp.play()
     
     def stop_note(self):
         """Stop the current note"""
-        # Stop all envelopes
+        # Stop carrier envelope
         self.carrier.amp_env.stop()
-        self.op1.freq_env.stop()
-        self.op1.amp_env.stop()
-        self.op2.freq_env.stop()
-        self.op2.amp_env.stop()
+        
+        # Stop all operator envelopes
+        for op in self.operators:
+            op.freq_env.stop()
+            op.amp_env.stop()
     
     def midi_loop(self):
         """Handle MIDI input"""
@@ -439,17 +506,17 @@ class MegaPartial2Op:
     
     def setup_gui(self):
         """Set up the GUI controls"""
-        # Operator 1 GUI
-        self.op1.setup_gui()
+        # Set up GUI for each operator
+        for op in self.operators:
+            op.setup_gui()
         
-        # Operator 2 GUI
-        self.op2.setup_gui()
-        
-        # Carrier GUI
+        # Set up carrier GUI
         self.carrier.setup_gui()
         self.carrier.amp_env.ctrl(title="Carrier Amplitude Envelope")
 
+
 # Run the synthesizer
 if __name__ == "__main__":
-    synth = MegaPartial2Op()
+    # Initialize with 4 operators by default
+    synth = CaelusSynth()
     synth.s.gui(locals())
