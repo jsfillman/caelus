@@ -1,0 +1,82 @@
+particle1:
+  op1:
+    ratio: 0.39230769872665405
+    index: 0.4076923131942749
+    freq_offset: 0.0
+    phase: 0.0
+    freq_env:
+      attack: 0.005
+      decay: 1.5
+      sustain: 0.1
+      release: 0.8
+      mul: 1.0
+    amp_env:
+      attack: 0.01
+      decay: 0.1
+      sustain: 0.5
+      release: 0.3
+      mul: 0.5
+    freq_delay: 0.0
+    depth_delay: 0.0
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.0
+    amp_ramp:
+      start: 1.0
+      end: 0.5
+      time: 1.0
+  op2:
+    ratio: 1.0
+    index: 0.800000011920929
+    freq_offset: 0.0
+    phase: 0.0
+    freq_env:
+      attack: 0.01
+      decay: 0.8
+      sustain: 0.4
+      release: 0.6
+      mul: 1.0
+    amp_env:
+      attack: 0.01
+      decay: 0.1
+      sustain: 0.5
+      release: 0.3
+      mul: 0.5
+    freq_delay: 0.0
+    depth_delay: 0.0
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.0
+    amp_ramp:
+      start: 1.0
+      end: 0.699999988079071
+      time: 0.8999999761581421
+  carrier:
+    ratio: 1.0
+    index: 0.0
+    freq_offset: 0.0
+    phase: 0.0
+    freq_env:
+      attack: 0.01
+      decay: 0.1
+      sustain: 0.5
+      release: 0.3
+      mul: 50
+    amp_env:
+      attack: 0.01
+      decay: 5.0
+      sustain: 0.8
+      release: 0.5
+      mul: 0.15
+    freq_delay: 0.0
+    depth_delay: 0.0
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.0
+    amp_ramp:
+      start: 1.0
+      end: 0.800000011920929
+      time: 1.0
