@@ -1,43 +1,17 @@
-"""
-Caelus - An advanced FM synthesis engine with pyo
-
-This module implements a modular FM synthesis architecture with multiple operators,
-extensive modulation capabilities, and parameter ramping for timbral evolution.
-The system supports MIDI input and provides a comprehensive GUI for all parameters.
-"""
-
 from pyo import *
 import mido
 import yaml
 import os
 from threading import Thread
 
-
 class Oscillator:
-    """
-    A modular oscillator component that can function as either a carrier or modulator.
-    
-    Each oscillator has independent control over frequency ratio, modulation index,
-    envelopes, and parameter ramping for both frequency and amplitude.
-    """
-    
     def __init__(self, name, role="operator", ratio=1.0, index=1.0, freq_offset=0.0):
-        """
-        Initialize an oscillator with the specified parameters.
-        
-        Args:
-            name: The display name of the oscillator
-            role: Either "carrier" or "operator" (modulator)
-            ratio: Frequency ratio relative to the fundamental pitch (e.g., 2.0 = one octave higher)
-            index: Modulation depth/intensity - higher values create more complex timbres with more harmonics
-            freq_offset: Fine tuning adjustment in Hz for precise frequency control
-        """
         # Basic parameters
         self.name = name
         self.role = role
-        self.freq_ratio = Sig(ratio)       # Frequency ratio relative to base pitch (e.g., 2.0 = one octave higher)
-        self.mod_depth = Sig(index)        # Modulation depth/intensity - higher values create more harmonics
-        self.tuning_offset = Sig(freq_offset)  # Fine tuning adjustment in Hz
+        self.ratio = Sig(ratio)
+        self.index = Sig(index)
+        self.freq_offset = Sig(freq_offset)
         
         # Waveform
         self.table = HarmTable([1])  # Default to sine wave
@@ -71,15 +45,9 @@ class Oscillator:
         self.osc = None
         self.freq = None
         self.amp = None
-        self.base_freq = None
         
     def update_ramps(self):
-        """
-        Update ramp segments based on current parameter values.
-        
-        This ensures that whenever parameters change via GUI controls,
-        the ramp generators are updated with the new values.
-        """
+        """Update ramp segments based on current parameter values"""
         # Update frequency ramp
         freq_time = max(0.01, self.freq_ramp_time.get())
         self.freq_ramp.setList([
@@ -95,11 +63,7 @@ class Oscillator:
         ])
     
     def play(self):
-        """
-        Trigger the oscillator, activating envelopes and ramps.
-        
-        Called when a note is played to start the sound generation process.
-        """
+        """Trigger the oscillator"""
         # Play envelopes with delays
         CallAfter(self.freq_env.play, self.freq_delay.value)
         CallAfter(self.amp_env.play, self.depth_delay.value)
@@ -109,21 +73,16 @@ class Oscillator:
         self.amp_ramp.play()
     
     def stop(self):
-        """
-        Release the oscillator by stopping its envelopes.
-        
-        Ramps complete on their own and don't need to be stopped.
-        """
+        """Release the oscillator"""
         CallAfter(self.freq_env.stop, self.freq_delay.value)
         CallAfter(self.amp_env.stop, self.depth_delay.value)
+        # Ramps complete on their own
     
     def setup_gui(self):
-        """
-        Create GUI controls for all parameters of this oscillator.
-        """
-        self.freq_ratio.ctrl(title=f"{self.name} Frequency Ratio")
-        self.mod_depth.ctrl(title=f"{self.name} Modulation Depth")
-        self.tuning_offset.ctrl(title=f"{self.name} Fine Tuning (Hz)")
+        """Create GUI controls for this oscillator"""
+        self.ratio.ctrl(title=f"{self.name} Ratio")
+        self.index.ctrl(title=f"{self.name} Index")
+        self.freq_offset.ctrl(title=f"{self.name} Freq Offset")
         
         self.freq_env.ctrl(title=f"{self.name} Freq Env")
         self.amp_env.ctrl(title=f"{self.name} Amp Env")
@@ -142,16 +101,11 @@ class Oscillator:
         self.phase.ctrl(title=f"{self.name} Phase")
         
     def get_parameters(self):
-        """
-        Return a dictionary with all parameters for saving to a preset file.
-        
-        Returns:
-            dict: All oscillator parameters formatted for YAML serialization
-        """
+        """Return a dictionary with all parameters for saving"""
         params = {
-            "ratio": self.freq_ratio.get(),
-            "index": self.mod_depth.get(),
-            "freq_offset": self.tuning_offset.get(),
+            "ratio": self.ratio.get(),
+            "index": self.index.get(),
+            "freq_offset": self.freq_offset.get(),
             "phase": self.phase.get(),
             
             "freq_env": {
@@ -186,16 +140,11 @@ class Oscillator:
         return params
     
     def load_parameters(self, params):
-        """
-        Load parameters from a dictionary (typically from a YAML preset file).
-        
-        Args:
-            params: Dictionary containing oscillator parameters
-        """
+        """Load parameters from a dictionary"""
         # Basic parameters
-        self.freq_ratio.value = params.get("ratio", 1.0)
-        self.mod_depth.value = params.get("index", 1.0)
-        self.tuning_offset.value = params.get("freq_offset", 0.0)
+        self.ratio.value = params.get("ratio", 1.0)
+        self.index.value = params.get("index", 1.0)
+        self.freq_offset.value = params.get("freq_offset", 0.0)
         self.phase.value = params.get("phase", 0.0)
         
         # Envelope parameters
@@ -233,31 +182,7 @@ class Oscillator:
 
 
 class CaelusSynth:
-    """
-    The main FM synthesis engine that manages multiple operators and audio routing.
-    
-    FM (Frequency Modulation) synthesis works by having one oscillator (modulator) 
-    affect the frequency of another oscillator (carrier). This creates complex 
-    harmonic structures that would be difficult to achieve with simple additive synthesis.
-    
-    Key FM synthesis concepts:
-    - Carrier: The oscillator whose output we hear directly
-    - Modulator (Operator): Oscillator that affects another oscillator's frequency
-    - Frequency Ratio: The relationship between modulator and carrier frequencies
-    - Modulation Depth: How strongly the modulator affects the carrier (more harmonics)
-    
-    CaelusSynth implements a flexible FM architecture where multiple operators (modulators)
-    can be chained to create complex timbres. The system supports preset saving/loading,
-    MIDI input, and provides a comprehensive GUI for all synthesis parameters.
-    """
-    
     def __init__(self, preset_file="caelus_preset.yaml"):
-        """
-        Initialize the FM synthesis engine.
-        
-        Args:
-            preset_file: Path to the YAML preset file to load (if exists)
-        """
         # Store preset file path
         self.preset_file = preset_file
         
@@ -265,9 +190,9 @@ class CaelusSynth:
         self.s = Server(nchnls=2).boot()
         
         # === Control signals ===
-        self.pitch = Sig(440.0)  # Base frequency
-        self.velocity = Sig(0.0)  # MIDI velocity (0-1)
-        self.aftertouch = Sig(0.0)  # MIDI aftertouch (0-1)
+        self.pitch = Sig(440.0)
+        self.velocity = Sig(0.0)
+        self.aftertouch = Sig(0.0)
         
         # List to hold all operators (modulators)
         self.operators = []
@@ -282,7 +207,6 @@ class CaelusSynth:
         
         # Add operator defaults (can be customized)
         self.operator_defaults = [
-            # Each operator has default parameters that define its initial behavior
             {"name": "Op1", "ratio": 3.0, "index": 1.0, "amp_ramp_end": 0.5, "amp_ramp_time": 1.2,
              "env": {"attack": 0.005, "decay": 1.5, "sustain": 0.1, "release": 0.8}},
             {"name": "Op2", "ratio": 1.0, "index": 0.8, "amp_ramp_end": 0.7, "amp_ramp_time": 0.9,
@@ -298,7 +222,7 @@ class CaelusSynth:
         ]
         
         # Initialize with a configurable number of operators
-        self.initialize_operators(num_operators=6)
+        self.initialize_operators(num_operators=6)  # Changed to 6 operators
         
         # Try to load preset parameters if file exists
         self.load_preset()
@@ -329,12 +253,7 @@ class CaelusSynth:
         self.s.start()
     
     def initialize_operators(self, num_operators=4):
-        """
-        Initialize a specific number of operators with default values.
-        
-        Args:
-            num_operators: Number of operators to create
-        """
+        """Initialize a specific number of operators with default values"""
         self.operators = []
         
         # Create operators based on defaults or up to num_operators
@@ -343,8 +262,8 @@ class CaelusSynth:
             op = Oscillator(
                 defaults["name"], 
                 role="modulator", 
-                ratio=defaults["ratio"],  # Frequency ratio relative to base pitch
-                index=defaults["index"]   # Modulation depth/intensity
+                ratio=defaults["ratio"], 
+                index=defaults["index"]
             )
             
             # Set envelope parameters
@@ -366,12 +285,7 @@ class CaelusSynth:
             self.operators.append(op)
     
     def setup_parameter_triggers(self):
-        """
-        Set up triggers to update ramps when parameters change.
-        
-        This creates signal processing triggers that detect when parameters
-        are changed through the GUI, ensuring ramps are properly updated.
-        """
+        """Set up triggers to update ramps when parameters change"""
         # Build a sum of all parameters that should trigger updates
         trigger_sum = Sig(0)
         
@@ -390,11 +304,7 @@ class CaelusSynth:
         self.param_updater = TrigFunc(param_trigger, self.update_all_ramps)
     
     def on_server_close(self):
-        """
-        Save the preset when the server is closed.
-        
-        This ensures parameters are saved even if the application exits unexpectedly.
-        """
+        """Save the preset when the server is closed"""
         # Use a flag to prevent multiple calls
         if not hasattr(self, '_closing'):
             self._closing = True
@@ -402,11 +312,7 @@ class CaelusSynth:
             self.save_preset()
         
     def save_preset(self):
-        """
-        Save all parameters to a preset file.
-        
-        Creates a YAML file containing all operator and carrier parameters.
-        """
+        """Save all parameters to a preset file"""
         preset_data = {"particle1": {}}
         
         # Save operator parameters
@@ -424,11 +330,7 @@ class CaelusSynth:
             print(f"Error saving preset: {e}")
     
     def load_preset(self):
-        """
-        Load parameters from a preset file if it exists.
-        
-        Looks for the specified preset file and loads its parameters.
-        """
+        """Load parameters from a preset file if it exists"""
         if not os.path.exists(self.preset_file):
             print(f"No preset file found at {self.preset_file}, using defaults")
             return
@@ -458,30 +360,19 @@ class CaelusSynth:
             print(f"Error loading preset: {e}")
     
     def update_all_ramps(self):
-        """
-        Update all operator and carrier ramps.
-        
-        Calls the update_ramps method on each oscillator to ensure
-        all parameter changes are reflected in the audio processing.
-        """
+        """Update all operator ramps"""
         for op in self.operators:
             op.update_ramps()
         self.carrier.update_ramps()
     
     def setup_chain(self):
-        """
-        Connect the operators in the FM chain.
-        
-        Creates the FM synthesis architecture by connecting operators in series,
-        where each operator modulates the frequency of the next. The final operator
-        modulates the carrier.
-        """
+        """Connect the operators in the FM chain"""
         prev_osc = None
         
         # Set up each operator in the chain
         for i, op in enumerate(self.operators):
-            # Calculate base frequency (fundamental * ratio + fine tuning)
-            op.base_freq = self.pitch * op.freq_ratio + op.tuning_offset
+            # Calculate base frequency
+            op.base_freq = self.pitch * op.ratio + op.freq_offset
             
             # Calculate modulated frequency
             if prev_osc is None:
@@ -491,8 +382,8 @@ class CaelusSynth:
                 # Subsequent operators are modulated by previous operator
                 op.freq = op.base_freq + (op.freq_ramp * self.pitch) + prev_osc
             
-            # Calculate amplitude (modulation gets stronger at higher pitches)
-            op.amp = self.pitch * op.mod_depth * op.amp_env * op.amp_ramp
+            # Calculate amplitude
+            op.amp = self.pitch * op.index * op.amp_env * op.amp_ramp
             
             # Create oscillator
             op.osc = Sine(freq=op.freq, mul=op.amp)
@@ -535,14 +426,7 @@ class CaelusSynth:
         self.final.out()
     
     def play_note(self, note, velocity_val):
-        """
-        Play a note with the given velocity.
-        
-        Args:
-            note: MIDI note number (0-127)
-            velocity_val: MIDI velocity (0-127)
-        """
-        # Convert MIDI note to frequency (A4 = 69 = 440Hz)
+        """Play a note with the given velocity"""
         freq_val = 440.0 * (2 ** ((note - 69) / 12))
         self.pitch.value = freq_val
         self.velocity.value = velocity_val / 127
@@ -568,9 +452,7 @@ class CaelusSynth:
             op.amp_ramp.play()
     
     def stop_note(self):
-        """
-        Stop the current note by releasing all envelopes.
-        """
+        """Stop the current note"""
         # Stop carrier envelope
         self.carrier.amp_env.stop()
         
@@ -580,13 +462,7 @@ class CaelusSynth:
             op.amp_env.stop()
     
     def midi_loop(self):
-        """
-        Handle MIDI input in a separate thread.
-        
-        This method runs in a separate thread and processes incoming MIDI messages,
-        triggering notes and handling polyphony by tracking active notes.
-        """
-        # Try to find a MIDI device
+        """Handle MIDI input"""
         port_name = None
         for name in mido.get_input_names():
             print("→", name)
@@ -599,7 +475,6 @@ class CaelusSynth:
         
         print(f"🎹 Listening on: {port_name}")
         
-        # Open the MIDI port and process messages
         with mido.open_input(port_name) as port:
             for msg in port:
                 if msg.type == 'note_on' and msg.velocity > 0:
@@ -630,9 +505,7 @@ class CaelusSynth:
                         self.aftertouch.value = msg.value / 127
     
     def setup_gui(self):
-        """
-        Set up the GUI controls for all oscillators.
-        """
+        """Set up the GUI controls"""
         # Set up GUI for each operator
         for op in self.operators:
             op.setup_gui()
@@ -644,6 +517,6 @@ class CaelusSynth:
 
 # Run the synthesizer
 if __name__ == "__main__":
-    # Initialize with 6 operators by default
+    # Initialize with 4 operators by default
     synth = CaelusSynth()
     synth.s.gui(locals())
