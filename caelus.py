@@ -478,8 +478,19 @@ class Particle:
 
     def setup_chain(self):
         """
-        Connect the operators in the FM chain with clear, direct connections.
+        Connect the operators in an FM chain with GUI-controllable modulation strength.
+        This allows real-time adjustment between subtle and extreme FM sounds.
         """
+        # Create a GUI-controllable modulation gain factor using SLMap
+        # Initialize with a moderate value of 1.0
+        self.mod_gain = Sig(1.0)
+        
+        # Add GUI control for MOD_GAIN with a range from 0.1 to 5.0 using SLMap
+        # This gives tremendous range from subtle to extreme FM
+        from pyo import SLMap
+        mod_gain_map = SLMap(0.1, 5.0, 'lin', 'value', 1.0)
+        self.mod_gain.ctrl([mod_gain_map], title="FM Modulation Intensity")
+        
         # Make sure we have operators
         if not self.operators:
             # No operators, carrier is unmodulated
@@ -489,77 +500,85 @@ class Particle:
                 freq=self.carrier.freq,
                 mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
             )
-            
         else:
-            # SIMPLIFIED APPROACH: 
-            # 1. Set up op6 (last operator) as an unmodulated sine oscillator
-            # 2. Op5 is modulated by op6, op4 by op5, etc.
-            # 3. Carrier is modulated by op1
+            # We'll implement a serial chain with user-controllable modulation strength
             
-            # Start with the deepest oscillator (op6 or the last one)
-            last_index = len(self.operators) - 1
+            # Start with the first operator (unmodulated)
+            self.operators[0].base_freq = self.pitch * self.operators[0].freq_ratio + self.operators[0].tuning_offset
+            self.operators[0].freq = self.operators[0].base_freq + (self.operators[0].freq_ramp * self.pitch)
             
-            # Set up deepest oscillator (unmodulated)
-            self.operators[last_index].base_freq = self.pitch * self.operators[last_index].freq_ratio
-            self.operators[last_index].freq = self.operators[last_index].base_freq
-            self.operators[last_index].amp = self.pitch * self.operators[last_index].mod_depth * self.operators[last_index].amp_env * self.operators[last_index].amp_ramp
-            self.operators[last_index].osc = Sine(freq=self.operators[last_index].freq, mul=self.operators[last_index].amp)
+            # Scale modulation depth by base frequency, with GUI control
+            self.operators[0].amp = self.operators[0].base_freq * self.operators[0].mod_depth * \
+                                    self.operators[0].amp_env * self.operators[0].amp_ramp * self.mod_gain
             
-            # Now work backward through the chain, each one modulated by the previous
-            for i in range(last_index - 1, -1, -1):
-                current = self.operators[i]
-                modulator = self.operators[i + 1]
-                
-                # Base frequency from pitch and ratio
-                current.base_freq = self.pitch * current.freq_ratio
-                
-                # This operator's frequency is modulated by the previous one
-                # Direct, obvious modulation with no complexity
-                current.freq = current.base_freq + modulator.osc  
-                
-                # Set the amplitude
-                current.amp = self.pitch * current.mod_depth * current.amp_env * current.amp_ramp
-                
-                # Create the oscillator
-                current.osc = Sine(freq=current.freq, mul=current.amp)
-                
-                # Print debug info so we can see what's happening
-                print(f"{current.name}: Base freq = {current.base_freq}, Index = {current.mod_depth.get()}")
-                
-            # Finally, carrier is modulated by op1
-            self.carrier.base_freq = self.pitch
+            self.operators[0].osc = Sine(
+                freq=self.operators[0].freq, 
+                phase=self.operators[0].phase, 
+                mul=self.operators[0].amp
+            )
             
-            # DIRECT, OBVIOUS MODULATION: carrier freq = base + op1 output
-            self.carrier.freq = self.carrier.base_freq + self.operators[0].osc
+            # Now set up the rest of the operators, each modulated by the previous one
+            for i in range(1, len(self.operators)):
+                prev_op = self.operators[i-1]
+                curr_op = self.operators[i]
+                
+                # Calculate base frequency (without modulation)
+                curr_op.base_freq = self.pitch * curr_op.freq_ratio + curr_op.tuning_offset
+                
+                # Apply modulation with GUI-controllable strength
+                mod_signal = prev_op.osc * (1.0 + curr_op.mod_depth) * self.mod_gain
+                
+                # Apply frequency modulation from previous operator
+                curr_op.freq = curr_op.base_freq + (curr_op.freq_ramp * self.pitch) + mod_signal
+                
+                # Scale modulation depth by base frequency with GUI-controllable strength
+                curr_op.amp = curr_op.base_freq * curr_op.mod_depth * 1.5 * \
+                            curr_op.amp_env * curr_op.amp_ramp * self.mod_gain
+                
+                # Create oscillator
+                curr_op.osc = Sine(freq=curr_op.freq, phase=curr_op.phase, mul=curr_op.amp)
+                
+                # Debug output
+                print(f"{curr_op.name}: Base freq = {curr_op.base_freq.get()}, Modulated by {prev_op.name}")
             
+            # Carrier is modulated by the last operator with GUI-controllable strength
+            last_op = self.operators[-1]
+            self.carrier.base_freq = self.pitch * self.carrier.freq_ratio + self.carrier.tuning_offset
+            
+            # Apply modulation to carrier, with extra emphasis but still GUI-controllable 
+            mod_signal = last_op.osc * self.mod_gain * 2.0
+            self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + mod_signal
+            
+            # Debug output
+            print(f"Carrier: Base freq = {self.carrier.base_freq.get()}, Modulated by {last_op.name}")
+        
         # Carrier oscillator with amplitude controls
         self.carrier.osc = Sine(
             freq=self.carrier.freq,
+            phase=self.carrier.phase,
             mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
         )
-        
-        # Debug output
-        print(f"Carrier: Base freq = {self.carrier.base_freq}")
         
         # === STEREO OUTPUT WITH CENTER PANNING ===
         self.panner = Pan(self.carrier.osc, outs=2, pan=0.5)
         
         # === AUDIO OUTPUT WITH LIMITER ===
+        # Dynamic limiting to handle modulation extremes
         self.limiter = Compress(
             input=self.panner,
             thresh=-18,
-            ratio=20,
+            ratio=25,
             risetime=0.001,
-            falltime=0.1,
-            lookahead=5,
-            knee=0.5,
+            falltime=0.07,
+            lookahead=3,
+            knee=0.4,
             outputAmp=False
         )
         
-        # Output
+        # Final output level
         self.final = self.limiter * 0.6
         self.final.out()
-    
+   
     def play_note(self, note, velocity_val):
         """
         Play a note with the given velocity.
