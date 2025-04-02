@@ -1,3 +1,5 @@
+import yaml
+import os
 from pyo import *
 import mido
 from threading import Thread
@@ -97,12 +99,95 @@ class Oscillator:
         self.amp_ramp_time.ctrl(title=f"{self.name} Amp Ramp Time (sec)")
         
         self.phase.ctrl(title=f"{self.name} Phase")
+        
+    def get_parameters(self):
+        """Return a dictionary with all parameters for saving"""
+        params = {
+            "ratio": self.ratio.get(),
+            "index": self.index.get(),
+            "freq_offset": self.freq_offset.get(),
+            "phase": self.phase.get(),
+            
+            "freq_env": {
+                "attack": self.freq_env.attack,
+                "decay": self.freq_env.decay,
+                "sustain": self.freq_env.sustain,
+                "release": self.freq_env.release,
+                "mul": self.freq_env.mul
+            },
+            "amp_env": {
+                "attack": self.amp_env.attack,
+                "decay": self.amp_env.decay,
+                "sustain": self.amp_env.sustain,
+                "release": self.amp_env.release,
+                "mul": self.amp_env.mul
+            },
+            
+            "freq_delay": self.freq_delay.get(),
+            "depth_delay": self.depth_delay.get(),
+            
+            "freq_ramp": {
+                "start": self.freq_ramp_start.get(),
+                "end": self.freq_ramp_end.get(),
+                "time": self.freq_ramp_time.get()
+            },
+            "amp_ramp": {
+                "start": self.amp_ramp_start.get(),
+                "end": self.amp_ramp_end.get(),
+                "time": self.amp_ramp_time.get()
+            }
+        }
+        return params
+    
+    def load_parameters(self, params):
+        """Load parameters from a dictionary"""
+        # Basic parameters
+        self.ratio.value = params.get("ratio", 1.0)
+        self.index.value = params.get("index", 1.0)
+        self.freq_offset.value = params.get("freq_offset", 0.0)
+        self.phase.value = params.get("phase", 0.0)
+        
+        # Envelope parameters
+        freq_env_params = params.get("freq_env", {})
+        self.freq_env.attack = freq_env_params.get("attack", 0.01)
+        self.freq_env.decay = freq_env_params.get("decay", 0.1)
+        self.freq_env.sustain = freq_env_params.get("sustain", 0.5)
+        self.freq_env.release = freq_env_params.get("release", 0.3)
+        self.freq_env.mul = freq_env_params.get("mul", 50)
+        
+        amp_env_params = params.get("amp_env", {})
+        self.amp_env.attack = amp_env_params.get("attack", 0.01)
+        self.amp_env.decay = amp_env_params.get("decay", 0.1)
+        self.amp_env.sustain = amp_env_params.get("sustain", 0.5)
+        self.amp_env.release = amp_env_params.get("release", 0.3)
+        self.amp_env.mul = amp_env_params.get("mul", 0.5)
+        
+        # Delay parameters
+        self.freq_delay.value = params.get("freq_delay", 0.0)
+        self.depth_delay.value = params.get("depth_delay", 0.0)
+        
+        # Ramp parameters
+        freq_ramp_params = params.get("freq_ramp", {})
+        self.freq_ramp_start.value = freq_ramp_params.get("start", 0.0)
+        self.freq_ramp_end.value = freq_ramp_params.get("end", 0.0)
+        self.freq_ramp_time.value = freq_ramp_params.get("time", 1.0)
+        
+        amp_ramp_params = params.get("amp_ramp", {})
+        self.amp_ramp_start.value = amp_ramp_params.get("start", 1.0)
+        self.amp_ramp_end.value = amp_ramp_params.get("end", 1.0)
+        self.amp_ramp_time.value = amp_ramp_params.get("time", 1.0)
+        
+        # Update ramps with the new parameters
+        self.update_ramps()
+
 
 class MegaPartial2Op:
-    def __init__(self):
+    def __init__(self, preset_file="caelus_preset.yaml"):
+        # Store preset file path
+        self.preset_file = preset_file
+        
         # Boot the audio server with stereo output
         self.s = Server(nchnls=2).boot()
-        self.s.start()
         
         # === Control signals ===
         self.pitch = Sig(440.0)
@@ -130,6 +215,9 @@ class MegaPartial2Op:
         self.carrier.amp_ramp_end.value = 0.8
         self.carrier.amp_ramp_time.value = 1.5
         
+        # Try to load preset parameters if file exists
+        self.load_preset()
+        
         # Set up triggers to update ramps when parameters change
         param_trigger = Change(
             self.op1.freq_ramp_start + self.op1.freq_ramp_end + self.op1.freq_ramp_time + 
@@ -156,6 +244,76 @@ class MegaPartial2Op:
         
         # Launch MIDI handler
         Thread(target=self.midi_loop, daemon=True).start()
+        
+        # Use atexit to register the save function
+        import atexit
+        atexit.register(self.save_preset)
+        
+        # Start the server last
+        self.s.start()
+    
+    def on_server_close(self):
+        """Save the preset when the server is closed"""
+        # Use a flag to prevent multiple calls
+        if not hasattr(self, '_closing'):
+            self._closing = True
+            print("Saving preset...")
+            self.save_preset()
+        
+    def save_preset(self):
+        """Save all parameters to a preset file"""
+        preset_data = {
+            "particle1": {
+                "op1": self.op1.get_parameters(),
+                "op2": self.op2.get_parameters(),
+                "carrier": self.carrier.get_parameters()
+            }
+        }
+        
+        try:
+            with open(self.preset_file, 'w') as f:
+                yaml.dump(preset_data, f, default_flow_style=False, sort_keys=False)
+            print(f"Preset saved to {self.preset_file}")
+        except Exception as e:
+            print(f"Error saving preset: {e}")
+    
+    def load_preset(self):
+        """Load parameters from a preset file if it exists"""
+        if not os.path.exists(self.preset_file):
+            print(f"No preset file found at {self.preset_file}, using defaults")
+            return
+        
+        try:
+            with open(self.preset_file, 'r') as f:
+                preset_data = yaml.safe_load(f)
+            
+            # Try to load from the new structure
+            if "particle1" in preset_data:
+                particle_data = preset_data["particle1"]
+                
+                if "op1" in particle_data:
+                    self.op1.load_parameters(particle_data["op1"])
+                
+                if "op2" in particle_data:
+                    self.op2.load_parameters(particle_data["op2"])
+                
+                if "carrier" in particle_data:
+                    self.carrier.load_parameters(particle_data["carrier"])
+            
+            # Fallback to old structure if needed
+            elif "op1" in preset_data:
+                print("Loading from legacy preset format")
+                self.op1.load_parameters(preset_data["op1"])
+                
+                if "op2" in preset_data:
+                    self.op2.load_parameters(preset_data["op2"])
+                
+                if "carrier" in preset_data:
+                    self.carrier.load_parameters(preset_data["carrier"])
+            
+            print(f"Preset loaded from {self.preset_file}")
+        except Exception as e:
+            print(f"Error loading preset: {e}")
     
     def update_all_ramps(self):
         """Update all operator ramps"""
@@ -169,28 +327,22 @@ class MegaPartial2Op:
         self.op1.base_freq = self.pitch * self.op1.ratio + self.op1.freq_offset
         self.op1.freq = self.op1.base_freq + (self.op1.freq_ramp * self.pitch)
         self.op1.amp = self.pitch * self.op1.index * self.op1.amp_env * self.op1.amp_ramp
-        # Use Osc with HarmTable instead of Sine
-        self.op1.osc = Osc(table=self.op1.table, freq=self.op1.freq, mul=self.op1.amp, phase=self.op1.phase)
+        self.op1.osc = Sine(freq=self.op1.freq, mul=self.op1.amp)
         
         # Operator 2 calculations
         self.op2.base_freq = self.pitch * self.op2.ratio + self.op2.freq_offset
         self.op2.freq = self.op2.base_freq + (self.op2.freq_ramp * self.pitch) + self.op1.osc
         self.op2.amp = self.pitch * self.op2.index * self.op2.amp_env * self.op2.amp_ramp
-        # Use Osc with HarmTable instead of Sine
-        self.op2.osc = Osc(table=self.op2.table, freq=self.op2.freq, mul=self.op2.amp, phase=self.op2.phase)
+        self.op2.osc = Sine(freq=self.op2.freq, mul=self.op2.amp)
         
         # Carrier calculations
         self.carrier.base_freq = self.pitch
         self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + self.op2.osc
-        # Use Osc with HarmTable instead of Sine
-        self.carrier.osc = Osc(
-            table=self.carrier.table,
+        self.carrier.osc = Sine(
             freq=self.carrier.freq,
-            mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp,
-            phase=self.carrier.phase
+            mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
         )
         
-        # Rest of the method remains unchanged
         # === STEREO OUTPUT WITH CENTER PANNING ===
         self.panner = Pan(self.carrier.osc, outs=2, pan=0.5)
         
