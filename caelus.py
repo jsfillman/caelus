@@ -3,6 +3,7 @@ Caelus - An advanced FM synthesis engine with pyo
 Enhanced with:
 1. Self-feedback capabilities for each operator
 2. Multi-tap delay effects
+3. Pan LFO for dynamic stereo movement
 
 This module implements a modular FM synthesis architecture with multiple operators,
 extensive modulation capabilities, and parameter ramping for timbral evolution.
@@ -23,6 +24,7 @@ class Oscillator:
     Enhanced with:
     1. Self-feedback capability
     2. Multi-tap delay effects
+    3. Pan LFO for dynamic stereo movement
     
     Each oscillator has independent control over frequency ratio, modulation index,
     envelopes, and parameter ramping for both frequency and amplitude.
@@ -83,17 +85,32 @@ class Oscillator:
         # Phase control
         self.phase = Sig(0.0)
         
-        # === NEW: Feedback parameters ===
+        # === Feedback parameters ===
         self.feedback_amount = Sig(0.0)     # Amount of feedback (0-1)
         self.feedback_gain = Sig(0.5)        # Gain of feedback signal
         self.feedback_frequency = Sig(0.0)   # Frequency offset for feedback
         self.feedback_signal = None         # Will hold the feedback signal
         
-        # === NEW: Multi-tap delay parameters ===
+        # === Multi-tap delay parameters ===
         self.delay_dry_wet = Sig(0.3)        # Mix between dry and wet signals (0-1)
         self.delay_time = [Sig(0.125), Sig(0.25), Sig(0.375)]  # Delay times for each tap in seconds
         self.delay_feedback = Sig(0.4)       # Feedback amount for the delay
         self.delay_signal = None            # Will hold the delayed signal
+        
+        # === NEW: LFO for panning parameters ===
+        self.pan_lfo_active = Sig(0)        # 0 = off, 1 = on
+        self.pan_lfo_freq = Sig(0.2)        # Default to 0.2 Hz (5 second cycle)
+        self.pan_lfo_depth = Sig(0.5)       # Default to 0.5 depth (covers half the stereo field)
+        self.pan_lfo_phase = Sig(0.0)       # Default to 0 phase
+        self.pan_lfo_center = Sig(0.5)      # Default to center pan position
+        
+        # Create the LFO oscillator using HarmTable for efficiency
+        self.pan_lfo_wave = HarmTable([1])  # Default to sine wave
+        self.pan_lfo = Osc(table=self.pan_lfo_wave, freq=self.pan_lfo_freq, 
+                          phase=self.pan_lfo_phase, mul=self.pan_lfo_depth)
+        
+        # Calculate panning position: center + LFO (when active)
+        self.pan_calc = Clip(self.pan_lfo_center + (self.pan_lfo * self.pan_lfo_active), min=0, max=1)
         
         # The oscillator itself - will be properly connected in the synth class
         self.osc = None
@@ -159,26 +176,30 @@ class Oscillator:
                 self.freq = self.freq + self.feedback_signal
     
     def setup_delay(self):
-        """Set up the multi-tap delay effects for the oscillator"""
+        """Set up the multi-tap delay effects for the oscillator with LFO panning"""
         if self.osc is not None:
+            # Create panner for the main oscillator with LFO control
+            self.direct_panner = Pan(self.osc, outs=2, pan=self.pan_calc)
+            
             # Create a multi-tap delay with three taps for rich stereo spread
-            # Convert delay times from seconds to samples if needed
             tap1 = Delay(self.osc, delay=self.delay_time[0], feedback=self.delay_feedback, mul=0.6)
             tap2 = Delay(self.osc, delay=self.delay_time[1], feedback=self.delay_feedback * 0.8, mul=0.4)
             tap3 = Delay(self.osc, delay=self.delay_time[2], feedback=self.delay_feedback * 0.6, mul=0.3)
             
-            # Mix the three taps with different pan positions for stereo spread
-            tap1_pan = Pan(tap1, pan=0.3)
-            tap2_pan = Pan(tap2, pan=0.5)
-            tap3_pan = Pan(tap3, pan=0.7)
+            # Mix the three taps with offset pan positions based on the LFO position
+            # This creates a wider stereo image
+            tap1_pan = Pan(tap1, pan=Clip(self.pan_calc - 0.2, min=0, max=1))
+            tap2_pan = Pan(tap2, pan=self.pan_calc)
+            tap3_pan = Pan(tap3, pan=Clip(self.pan_calc + 0.2, min=0, max=1))
             
             # Mix the delayed signals
             self.delay_signal = Mix([tap1_pan, tap2_pan, tap3_pan], voices=2)
             
             # Create a dry/wet balance between original and delayed signal
-            self.output = Interp(self.osc, self.delay_signal, interp=self.delay_dry_wet)
+            self.output = Interp(self.direct_panner, self.delay_signal, interp=self.delay_dry_wet)
         else:
-            self.output = self.osc
+            # If no oscillator is created yet, just set output to None
+            self.output = None
     
     def play(self):
         """
@@ -278,7 +299,7 @@ class Oscillator:
         self.amp_ramp_time.ctrl([amp_ramp_time_map], title=f"{self.name} Amp Ramp Time")
         self.amp_ramp_time_fine.ctrl([amp_ramp_time_fine_map], title=f"{self.name} Amp Ramp Time Fine")
         
-        # === NEW: Feedback controls ===
+        # === Feedback controls ===
         feedback_amount_map = SLMap(0.0, 1.0, 'lin', 'value', self.feedback_amount.get())
         self.feedback_amount.ctrl([feedback_amount_map], title=f"{self.name} Feedback Amount")
         
@@ -288,7 +309,7 @@ class Oscillator:
         feedback_freq_map = SLMap(-200.0, 200.0, 'lin', 'value', self.feedback_frequency.get())
         self.feedback_frequency.ctrl([feedback_freq_map], title=f"{self.name} Feedback Freq Shift")
         
-        # === NEW: Multi-tap delay controls ===
+        # === Multi-tap delay controls ===
         delay_drywet_map = SLMap(0.0, 1.0, 'lin', 'value', self.delay_dry_wet.get())
         self.delay_dry_wet.ctrl([delay_drywet_map], title=f"{self.name} Delay Dry/Wet")
         
@@ -303,6 +324,22 @@ class Oscillator:
         
         delay_feedback_map = SLMap(0.0, 0.99, 'lin', 'value', self.delay_feedback.get())
         self.delay_feedback.ctrl([delay_feedback_map], title=f"{self.name} Delay Feedback")
+        
+        # === NEW: Pan LFO controls ===
+        pan_lfo_active_map = SLMap(0.0, 1.0, 'lin', 'value', self.pan_lfo_active.get())
+        self.pan_lfo_active.ctrl([pan_lfo_active_map], title=f"{self.name} Pan LFO On/Off")
+        
+        pan_lfo_center_map = SLMap(0.0, 1.0, 'lin', 'value', self.pan_lfo_center.get())
+        self.pan_lfo_center.ctrl([pan_lfo_center_map], title=f"{self.name} Pan Center")
+        
+        pan_lfo_freq_map = SLMap(0.01, 20.0, 'log', 'value', self.pan_lfo_freq.get())
+        self.pan_lfo_freq.ctrl([pan_lfo_freq_map], title=f"{self.name} Pan LFO Rate")
+        
+        pan_lfo_depth_map = SLMap(0.0, 1.0, 'lin', 'value', self.pan_lfo_depth.get())
+        self.pan_lfo_depth.ctrl([pan_lfo_depth_map], title=f"{self.name} Pan LFO Depth")
+        
+        pan_lfo_phase_map = SLMap(0.0, 1.0, 'lin', 'value', self.pan_lfo_phase.get())
+        self.pan_lfo_phase.ctrl([pan_lfo_phase_map], title=f"{self.name} Pan LFO Phase")
  
     def get_parameters(self):
         """
@@ -350,18 +387,27 @@ class Oscillator:
                 "time_fine": self.amp_ramp_time_fine.get()
             },
             
-            # NEW: Save feedback parameters
+            # Feedback parameters
             "feedback": {
                 "amount": self.feedback_amount.get(),
                 "gain": self.feedback_gain.get(),
                 "frequency": self.feedback_frequency.get()
             },
             
-            # NEW: Save delay parameters
+            # Delay parameters
             "delay": {
                 "dry_wet": self.delay_dry_wet.get(),
                 "time": [self.delay_time[0].get(), self.delay_time[1].get(), self.delay_time[2].get()],
                 "feedback": self.delay_feedback.get()
+            },
+            
+            # NEW: Pan LFO parameters
+            "pan_lfo": {
+                "active": self.pan_lfo_active.get(),
+                "center": self.pan_lfo_center.get(),
+                "freq": self.pan_lfo_freq.get(),
+                "depth": self.pan_lfo_depth.get(),
+                "phase": self.pan_lfo_phase.get()
             }
         }
         return params
@@ -413,13 +459,13 @@ class Oscillator:
         self.amp_ramp_time.value = amp_ramp_params.get("time", 1.0)
         self.amp_ramp_time_fine.value = amp_ramp_params.get("time_fine", 0.0)
         
-        # NEW: Load feedback parameters
+        # Load feedback parameters
         feedback_params = params.get("feedback", {})
         self.feedback_amount.value = feedback_params.get("amount", 0.0)
         self.feedback_gain.value = feedback_params.get("gain", 0.5)
         self.feedback_frequency.value = feedback_params.get("frequency", 0.0)
         
-        # NEW: Load delay parameters
+        # Load delay parameters
         delay_params = params.get("delay", {})
         self.delay_dry_wet.value = delay_params.get("dry_wet", 0.3)
         
@@ -430,6 +476,19 @@ class Oscillator:
                 
         self.delay_feedback.value = delay_params.get("feedback", 0.4)
         
+        # NEW: Load Pan LFO parameters
+        pan_lfo_params = params.get("pan_lfo", {})
+        self.pan_lfo_active.value = pan_lfo_params.get("active", 0.0)
+        self.pan_lfo_center.value = pan_lfo_params.get("center", 0.5)
+        self.pan_lfo_freq.value = pan_lfo_params.get("freq", 0.2)
+        self.pan_lfo_depth.value = pan_lfo_params.get("depth", 0.5)
+        self.pan_lfo_phase.value = pan_lfo_params.get("phase", 0.0)
+        
+        # Update the LFO oscillator with new parameters
+        self.pan_lfo.freq = self.pan_lfo_freq
+        self.pan_lfo.phase = self.pan_lfo_phase
+        self.pan_lfo.mul = self.pan_lfo_depth
+        
         # Update ramps with the new parameters
         self.update_ramps()
 
@@ -438,7 +497,8 @@ class Particle:
     """
     A single FM synthesis particle that manages multiple operators and audio routing.
     
-    Enhanced with operator feedback and multitap delay effects for rich, evolving timbres.
+    Enhanced with operator feedback, multitap delay effects, and pan LFO for rich, 
+    evolving timbres with dynamic stereo movement.
     """
     
     def __init__(self, preset_file="caelus_preset.yaml", server=None):
@@ -663,12 +723,13 @@ class Particle:
         
     def setup_chain(self):
         """
-        Connect the operators in an FM chain with feedback and delay.
+        Connect the operators in an FM chain with feedback, delay, and pan LFO.
         
         This method sets up the FM synthesis architecture with:
         1. Self-feedback on each oscillator
         2. Multi-tap delay effects
         3. Overall modulation strength control
+        4. Pan LFO for dynamic stereo movement
         """
         # Create a GUI-controllable modulation gain factor using SLMap
         # Initialize with a moderate value of 1.0
@@ -695,12 +756,13 @@ class Particle:
             # Apply feedback if enabled
             self.carrier.setup_feedback()
             
-            # Apply delay if enabled
+            # Apply delay and panning (with LFO)
             self.carrier.setup_delay()
             
             # Set output - either direct oscillator or delayed version
             if self.carrier.output is None:
-                self.carrier.output = self.carrier.osc
+                # Create panner for the oscillator with LFO control if no delay is used
+                self.carrier.output = Pan(self.carrier.osc, outs=2, pan=self.carrier.pan_calc)
         else:
             # We'll implement a serial chain with user-controllable modulation strength
             
@@ -726,7 +788,7 @@ class Particle:
             # Add feedback loop to first operator
             self.operators[0].setup_feedback()
             
-            # Add delay to first operator
+            # Add delay and panning with LFO to first operator
             self.operators[0].setup_delay()
             
             # Now set up the rest of the operators, each modulated by the previous one
@@ -759,7 +821,7 @@ class Particle:
                 # Add feedback loop to this operator
                 curr_op.setup_feedback()
                 
-                # Add delay effects to this operator
+                # Add delay and panning with LFO to this operator
                 curr_op.setup_delay()
                 
                 # Debug output
@@ -789,18 +851,19 @@ class Particle:
         # Apply feedback to carrier
         self.carrier.setup_feedback()
         
-        # Apply delay to carrier
+        # Apply delay and panning with LFO to carrier
         self.carrier.setup_delay()
         
-        # === STEREO OUTPUT WITH CENTER PANNING ===
-        # Use the carrier's processed output if available, otherwise use the raw oscillator
-        carrier_signal = self.carrier.output if self.carrier.output is not None else self.carrier.osc
-        self.panner = Pan(carrier_signal, outs=2, pan=0.5)
+        # === STEREO OUTPUT WITH LFO PANNING ===
+        # Use the carrier's processed output if available, otherwise use the raw oscillator with direct panning
+        carrier_signal = self.carrier.output
+        if carrier_signal is None:
+            carrier_signal = Pan(self.carrier.osc, outs=2, pan=self.carrier.pan_calc)
         
         # === AUDIO OUTPUT WITH LIMITER ===
         # Dynamic limiting to handle modulation extremes
         self.limiter = Compress(
-            input=self.panner,
+            input=carrier_signal,
             thresh=-18,
             ratio=25,
             risetime=0.001,
@@ -1018,7 +1081,7 @@ class CaelusSynth:
         pass
 
 
-# Example preset that focuses on feedback and delay
+# Example preset that includes pan LFO settings
 default_preset = """
 particle1:
   op1:
@@ -1056,6 +1119,12 @@ particle1:
       dry_wet: 0.2
       time: [0.12, 0.24, 0.36]
       feedback: 0.3
+    pan_lfo:
+      active: 1.0
+      center: 0.5
+      freq: 0.2
+      depth: 0.5
+      phase: 0.0
   op2:
     ratio: 1.0
     index: 2.5
@@ -1091,6 +1160,12 @@ particle1:
       dry_wet: 0.15
       time: [0.08, 0.16, 0.24]
       feedback: 0.4
+    pan_lfo:
+      active: 1.0
+      center: 0.3
+      freq: 0.15
+      depth: 0.4
+      phase: 0.5
   carrier:
     ratio: 1.0
     index: 0.0
@@ -1126,8 +1201,8 @@ particle1:
       dry_wet: 0.35
       time: [0.25, 0.5, 0.75]
       feedback: 0.5
-"""
-
+    pan_lfo:" \
+    """
 # Run the synthesizer
 if __name__ == "__main__":
     # Create presets directory if it doesn't exist
@@ -1135,12 +1210,12 @@ if __name__ == "__main__":
         os.makedirs("presets")
     
     # Create default preset file if it doesn't exist
-    default_preset_path = "presets/default_feedback_delay.yaml"
+    default_preset_path = "presets/default_pan_lfo.yaml"
     if not os.path.exists(default_preset_path):
         with open(default_preset_path, "w") as f:
             f.write(default_preset)
         print(f"Created default preset at {default_preset_path}")
     
-    # Initialize with just one particle and the default feedback preset
+    # Initialize with just one particle and the default pan LFO preset
     synth = Particle(preset_file=default_preset_path)
     synth.s.gui(locals())
