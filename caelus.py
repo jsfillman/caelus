@@ -1,5 +1,8 @@
 """
 Caelus - An advanced FM synthesis engine with pyo
+Enhanced with:
+1. Self-feedback capabilities for each operator
+2. Multi-tap delay effects
 
 This module implements a modular FM synthesis architecture with multiple operators,
 extensive modulation capabilities, and parameter ramping for timbral evolution.
@@ -16,6 +19,10 @@ from threading import Thread
 class Oscillator:
     """
     A modular oscillator component that can function as either a carrier or modulator.
+    
+    Enhanced with:
+    1. Self-feedback capability
+    2. Multi-tap delay effects
     
     Each oscillator has independent control over frequency ratio, modulation index,
     envelopes, and parameter ramping for both frequency and amplitude.
@@ -76,11 +83,25 @@ class Oscillator:
         # Phase control
         self.phase = Sig(0.0)
         
+        # === NEW: Feedback parameters ===
+        self.feedback_amount = Sig(0.0)     # Amount of feedback (0-1)
+        self.feedback_gain = Sig(0.5)        # Gain of feedback signal
+        self.feedback_frequency = Sig(0.0)   # Frequency offset for feedback
+        self.feedback_signal = None         # Will hold the feedback signal
+        
+        # === NEW: Multi-tap delay parameters ===
+        self.delay_dry_wet = Sig(0.3)        # Mix between dry and wet signals (0-1)
+        self.delay_time = [Sig(0.125), Sig(0.25), Sig(0.375)]  # Delay times for each tap in seconds
+        self.delay_feedback = Sig(0.4)       # Feedback amount for the delay
+        self.delay_signal = None            # Will hold the delayed signal
+        
         # The oscillator itself - will be properly connected in the synth class
         self.osc = None
+        self.pre_osc = None  # Signal before feedback is applied
         self.freq = None
         self.amp = None
         self.base_freq = None
+        self.output = None   # The final output signal after all processing
         
     def update_ramps(self):
         """
@@ -109,6 +130,55 @@ class Oscillator:
     def get_mod_depth(self):
         """Get the combined modulation depth from macro and fine controls"""
         return self.mod_depth.get() + self.mod_depth_fine.get()
+    
+    def setup_feedback(self):
+        """Set up the feedback path for the oscillator"""
+        if self.osc is not None and self.feedback_amount.get() > 0:
+            # Create a delayed version of our own output signal
+            # This avoids zero-delay feedback which can cause computation issues
+            delayed_feedback = Delay(self.osc, delay=0.001)
+            
+            # Scale the feedback signal by the feedback amount
+            scaled_feedback = delayed_feedback * self.feedback_amount * self.feedback_gain
+            
+            # Apply frequency offset to feedback if needed
+            if self.feedback_frequency.get() != 0:
+                # Use an additional oscillator to create frequency shift in feedback
+                feedback_pitch = self.base_freq + self.feedback_frequency
+                feedback_osc = Sine(freq=feedback_pitch, mul=scaled_feedback)
+                self.feedback_signal = feedback_osc
+            else:
+                self.feedback_signal = scaled_feedback
+            
+            # Apply the feedback to the frequency
+            if hasattr(self, 'freq') and self.freq is not None:
+                # Store original frequency signal
+                self.pre_feedback_freq = self.freq
+                
+                # Add feedback to frequency
+                self.freq = self.freq + self.feedback_signal
+    
+    def setup_delay(self):
+        """Set up the multi-tap delay effects for the oscillator"""
+        if self.osc is not None:
+            # Create a multi-tap delay with three taps for rich stereo spread
+            # Convert delay times from seconds to samples if needed
+            tap1 = Delay(self.osc, delay=self.delay_time[0], feedback=self.delay_feedback, mul=0.6)
+            tap2 = Delay(self.osc, delay=self.delay_time[1], feedback=self.delay_feedback * 0.8, mul=0.4)
+            tap3 = Delay(self.osc, delay=self.delay_time[2], feedback=self.delay_feedback * 0.6, mul=0.3)
+            
+            # Mix the three taps with different pan positions for stereo spread
+            tap1_pan = Pan(tap1, pan=0.3)
+            tap2_pan = Pan(tap2, pan=0.5)
+            tap3_pan = Pan(tap3, pan=0.7)
+            
+            # Mix the delayed signals
+            self.delay_signal = Mix([tap1_pan, tap2_pan, tap3_pan], voices=2)
+            
+            # Create a dry/wet balance between original and delayed signal
+            self.output = Interp(self.osc, self.delay_signal, interp=self.delay_dry_wet)
+        else:
+            self.output = self.osc
     
     def play(self):
         """
@@ -206,7 +276,33 @@ class Oscillator:
         self.amp_ramp_start.ctrl([amp_ramp_start_map], title=f"{self.name} Amp Ramp Start")
         self.amp_ramp_end.ctrl([amp_ramp_end_map], title=f"{self.name} Amp Ramp End")
         self.amp_ramp_time.ctrl([amp_ramp_time_map], title=f"{self.name} Amp Ramp Time")
-        self.amp_ramp_time_fine.ctrl([amp_ramp_time_fine_map], title=f"{self.name} Amp Ramp Time Fine")  
+        self.amp_ramp_time_fine.ctrl([amp_ramp_time_fine_map], title=f"{self.name} Amp Ramp Time Fine")
+        
+        # === NEW: Feedback controls ===
+        feedback_amount_map = SLMap(0.0, 1.0, 'lin', 'value', self.feedback_amount.get())
+        self.feedback_amount.ctrl([feedback_amount_map], title=f"{self.name} Feedback Amount")
+        
+        feedback_gain_map = SLMap(0.0, 2.0, 'lin', 'value', self.feedback_gain.get())
+        self.feedback_gain.ctrl([feedback_gain_map], title=f"{self.name} Feedback Gain")
+        
+        feedback_freq_map = SLMap(-200.0, 200.0, 'lin', 'value', self.feedback_frequency.get())
+        self.feedback_frequency.ctrl([feedback_freq_map], title=f"{self.name} Feedback Freq Shift")
+        
+        # === NEW: Multi-tap delay controls ===
+        delay_drywet_map = SLMap(0.0, 1.0, 'lin', 'value', self.delay_dry_wet.get())
+        self.delay_dry_wet.ctrl([delay_drywet_map], title=f"{self.name} Delay Dry/Wet")
+        
+        # We'll use single controls for each tap time
+        delay_time1_map = SLMap(0.01, 2.0, 'log', 'value', self.delay_time[0].get())
+        delay_time2_map = SLMap(0.01, 2.0, 'log', 'value', self.delay_time[1].get())
+        delay_time3_map = SLMap(0.01, 2.0, 'log', 'value', self.delay_time[2].get())
+        
+        self.delay_time[0].ctrl([delay_time1_map], title=f"{self.name} Delay Time 1")
+        self.delay_time[1].ctrl([delay_time2_map], title=f"{self.name} Delay Time 2")
+        self.delay_time[2].ctrl([delay_time3_map], title=f"{self.name} Delay Time 3")
+        
+        delay_feedback_map = SLMap(0.0, 0.99, 'lin', 'value', self.delay_feedback.get())
+        self.delay_feedback.ctrl([delay_feedback_map], title=f"{self.name} Delay Feedback")
  
     def get_parameters(self):
         """
@@ -252,6 +348,20 @@ class Oscillator:
                 "end": self.amp_ramp_end.get(),
                 "time": self.amp_ramp_time.get(),
                 "time_fine": self.amp_ramp_time_fine.get()
+            },
+            
+            # NEW: Save feedback parameters
+            "feedback": {
+                "amount": self.feedback_amount.get(),
+                "gain": self.feedback_gain.get(),
+                "frequency": self.feedback_frequency.get()
+            },
+            
+            # NEW: Save delay parameters
+            "delay": {
+                "dry_wet": self.delay_dry_wet.get(),
+                "time": [self.delay_time[0].get(), self.delay_time[1].get(), self.delay_time[2].get()],
+                "feedback": self.delay_feedback.get()
             }
         }
         return params
@@ -303,26 +413,32 @@ class Oscillator:
         self.amp_ramp_time.value = amp_ramp_params.get("time", 1.0)
         self.amp_ramp_time_fine.value = amp_ramp_params.get("time_fine", 0.0)
         
+        # NEW: Load feedback parameters
+        feedback_params = params.get("feedback", {})
+        self.feedback_amount.value = feedback_params.get("amount", 0.0)
+        self.feedback_gain.value = feedback_params.get("gain", 0.5)
+        self.feedback_frequency.value = feedback_params.get("frequency", 0.0)
+        
+        # NEW: Load delay parameters
+        delay_params = params.get("delay", {})
+        self.delay_dry_wet.value = delay_params.get("dry_wet", 0.3)
+        
+        delay_times = delay_params.get("time", [0.125, 0.25, 0.375])
+        for i, time in enumerate(delay_times[:3]):  # Ensure we only take up to 3 values
+            if i < len(self.delay_time):
+                self.delay_time[i].value = time
+                
+        self.delay_feedback.value = delay_params.get("feedback", 0.4)
+        
         # Update ramps with the new parameters
         self.update_ramps()
+
 
 class Particle:
     """
     A single FM synthesis particle that manages multiple operators and audio routing.
     
-    FM (Frequency Modulation) synthesis works by having one oscillator (modulator) 
-    affect the frequency of another oscillator (carrier). This creates complex 
-    harmonic structures that would be difficult to achieve with simple additive synthesis.
-    
-    Key FM synthesis concepts:
-    - Carrier: The oscillator whose output we hear directly
-    - Modulator (Operator): Oscillator that affects another oscillator's frequency
-    - Frequency Ratio: The relationship between modulator and carrier frequencies
-    - Modulation Depth: How strongly the modulator affects the carrier (more harmonics)
-    
-    Particle implements a flexible FM architecture where multiple operators (modulators)
-    can be chained to create complex timbres. The system supports preset saving/loading,
-    MIDI input, and provides a comprehensive GUI for all synthesis parameters.
+    Enhanced with operator feedback and multitap delay effects for rich, evolving timbres.
     """
     
     def __init__(self, preset_file="caelus_preset.yaml", server=None):
@@ -544,11 +660,15 @@ class Particle:
         for op in self.operators:
             op.update_ramps()
         self.carrier.update_ramps()
-
+        
     def setup_chain(self):
         """
-        Connect the operators in an FM chain with GUI-controllable modulation strength.
-        This allows real-time adjustment between subtle and extreme FM sounds.
+        Connect the operators in an FM chain with feedback and delay.
+        
+        This method sets up the FM synthesis architecture with:
+        1. Self-feedback on each oscillator
+        2. Multi-tap delay effects
+        3. Overall modulation strength control
         """
         # Create a GUI-controllable modulation gain factor using SLMap
         # Initialize with a moderate value of 1.0
@@ -565,14 +685,26 @@ class Particle:
             # No operators, carrier is unmodulated
             self.carrier.base_freq = self.pitch
             self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch)
+            
+            # Create carrier oscillator
             self.carrier.osc = Sine(
                 freq=self.carrier.freq,
                 mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
             )
+            
+            # Apply feedback if enabled
+            self.carrier.setup_feedback()
+            
+            # Apply delay if enabled
+            self.carrier.setup_delay()
+            
+            # Set output - either direct oscillator or delayed version
+            if self.carrier.output is None:
+                self.carrier.output = self.carrier.osc
         else:
             # We'll implement a serial chain with user-controllable modulation strength
             
-            # Start with the first operator (unmodulated)
+            # Start with the first operator (unmodulated except for self-feedback)
             # Use the combined frequency ratio (macro + fine)
             combined_ratio = self.operators[0].get_freq_ratio()
             combined_depth = self.operators[0].get_mod_depth()
@@ -582,13 +714,20 @@ class Particle:
             
             # Scale modulation depth by base frequency, with GUI control
             self.operators[0].amp = self.operators[0].base_freq * combined_depth * \
-                                    self.operators[0].amp_env * self.operators[0].amp_ramp * self.mod_gain
+                                self.operators[0].amp_env * self.operators[0].amp_ramp * self.mod_gain
             
+            # Create the oscillator
             self.operators[0].osc = Sine(
                 freq=self.operators[0].freq, 
                 phase=self.operators[0].phase, 
                 mul=self.operators[0].amp
             )
+            
+            # Add feedback loop to first operator
+            self.operators[0].setup_feedback()
+            
+            # Add delay to first operator
+            self.operators[0].setup_delay()
             
             # Now set up the rest of the operators, each modulated by the previous one
             for i in range(1, len(self.operators)):
@@ -603,7 +742,9 @@ class Particle:
                 curr_op.base_freq = self.pitch * combined_ratio + curr_op.tuning_offset.get()
                 
                 # Apply modulation with GUI-controllable strength
-                mod_signal = prev_op.osc * (1.0 + combined_depth) * self.mod_gain
+                # Use output from previous operator which includes any delay and feedback
+                mod_signal = (prev_op.output if prev_op.output is not None else prev_op.osc) * \
+                             (1.0 + combined_depth) * self.mod_gain
                 
                 # Apply frequency modulation from previous operator
                 curr_op.freq = curr_op.base_freq + (curr_op.freq_ramp * self.pitch) + mod_signal
@@ -615,6 +756,12 @@ class Particle:
                 # Create oscillator
                 curr_op.osc = Sine(freq=curr_op.freq, phase=curr_op.phase, mul=curr_op.amp)
                 
+                # Add feedback loop to this operator
+                curr_op.setup_feedback()
+                
+                # Add delay effects to this operator
+                curr_op.setup_delay()
+                
                 # Debug output
                 print(f"{curr_op.name}: Base freq = {curr_op.base_freq.get()}, Modulated by {prev_op.name}")
             
@@ -625,7 +772,8 @@ class Particle:
             self.carrier.base_freq = self.pitch * combined_ratio + self.carrier.tuning_offset.get()
             
             # Apply modulation to carrier, with extra emphasis but still GUI-controllable 
-            mod_signal = last_op.osc * self.mod_gain * 2.0
+            # Use output from last operator which includes any delay and feedback
+            mod_signal = (last_op.output if last_op.output is not None else last_op.osc) * self.mod_gain * 2.0
             self.carrier.freq = self.carrier.base_freq + (self.carrier.freq_ramp * self.pitch) + mod_signal
             
             # Debug output
@@ -638,8 +786,16 @@ class Particle:
             mul=self.carrier.amp_env * self.velocity * (0.5 + self.aftertouch**2 * 2) * self.carrier.amp_ramp
         )
         
+        # Apply feedback to carrier
+        self.carrier.setup_feedback()
+        
+        # Apply delay to carrier
+        self.carrier.setup_delay()
+        
         # === STEREO OUTPUT WITH CENTER PANNING ===
-        self.panner = Pan(self.carrier.osc, outs=2, pan=0.5)
+        # Use the carrier's processed output if available, otherwise use the raw oscillator
+        carrier_signal = self.carrier.output if self.carrier.output is not None else self.carrier.osc
+        self.panner = Pan(carrier_signal, outs=2, pan=0.5)
         
         # === AUDIO OUTPUT WITH LIMITER ===
         # Dynamic limiting to handle modulation extremes
@@ -657,7 +813,7 @@ class Particle:
         # Final output level
         self.final = self.limiter * 0.6
         self.final.out()
-   
+    
     def play_note(self, note, velocity_val):
         """
         Play a note with the given velocity.
@@ -862,8 +1018,129 @@ class CaelusSynth:
         pass
 
 
+# Example preset that focuses on feedback and delay
+default_preset = """
+particle1:
+  op1:
+    ratio: 3.0
+    index: 3.0
+    freq_offset: 0.0
+    phase: 0.0
+    freq_env:
+      attack: 0.005
+      decay: 1.5
+      sustain: 0.1
+      release: 0.8
+      mul: 1.0
+    amp_env:
+      attack: 0.001
+      decay: 0.1
+      sustain: 0.7
+      release: 0.5
+      mul: 1.0
+    freq_delay: 0.0
+    depth_delay: 0.0
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.0
+    amp_ramp:
+      start: 1.0
+      end: 0.5
+      time: 1.2
+    feedback:
+      amount: 0.3
+      gain: 0.7
+      frequency: 20.0
+    delay:
+      dry_wet: 0.2
+      time: [0.12, 0.24, 0.36]
+      feedback: 0.3
+  op2:
+    ratio: 1.0
+    index: 2.5
+    freq_offset: 0.0
+    phase: 0.25
+    freq_env:
+      attack: 0.01
+      decay: 0.8
+      sustain: 0.4
+      release: 0.6
+      mul: 1.0
+    amp_env:
+      attack: 0.001
+      decay: 0.2
+      sustain: 0.6
+      release: 0.4
+      mul: 0.8
+    freq_delay: 0.01
+    depth_delay: 0.01
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.0
+    amp_ramp:
+      start: 1.0
+      end: 0.7
+      time: 0.9
+    feedback:
+      amount: 0.4
+      gain: 0.5
+      frequency: -15.0
+    delay:
+      dry_wet: 0.15
+      time: [0.08, 0.16, 0.24]
+      feedback: 0.4
+  carrier:
+    ratio: 1.0
+    index: 0.0
+    freq_offset: 0.0
+    phase: 0.0
+    freq_env:
+      attack: 0.01
+      decay: 0.1
+      sustain: 0.8
+      release: 0.5
+      mul: 1.0
+    amp_env:
+      attack: 0.01
+      decay: 0.1
+      sustain: 0.8
+      release: 0.5
+      mul: 0.15
+    freq_delay: 0.0
+    depth_delay: 0.0
+    freq_ramp:
+      start: 0.0
+      end: 0.0
+      time: 1.5
+    amp_ramp:
+      start: 1.0
+      end: 0.8
+      time: 1.5
+    feedback:
+      amount: 0.2
+      gain: 0.6
+      frequency: 0.0
+    delay:
+      dry_wet: 0.35
+      time: [0.25, 0.5, 0.75]
+      feedback: 0.5
+"""
+
 # Run the synthesizer
 if __name__ == "__main__":
-    # Initialize with just one particle by default (legacy mode)
-    synth = Particle()
+    # Create presets directory if it doesn't exist
+    if not os.path.exists("presets"):
+        os.makedirs("presets")
+    
+    # Create default preset file if it doesn't exist
+    default_preset_path = "presets/default_feedback_delay.yaml"
+    if not os.path.exists(default_preset_path):
+        with open(default_preset_path, "w") as f:
+            f.write(default_preset)
+        print(f"Created default preset at {default_preset_path}")
+    
+    # Initialize with just one particle and the default feedback preset
+    synth = Particle(preset_file=default_preset_path)
     synth.s.gui(locals())
