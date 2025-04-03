@@ -1,190 +1,196 @@
 particle1:
   op1:
-    ratio: 1.0
-    index: 1.0
-    freq_offset: 0.0
-    phase: 0.0
+    ratio: 2.0
+    ratio_fine: 0.03
+    index: 4.0
+    index_fine: 0.5
+    freq_offset: 3.0
+    phase: 0.17
     freq_env:
-      attack: 0.001
-      decay: 0.7
-      sustain: 0.0
-      release: 0.5
-      mul: 3.0
-    amp_env:
-      attack: 0.001
-      decay: 4.0
-      sustain: 0.0
-      release: 0.7
-      mul: 1.2
-    freq_delay: 0.0
-    depth_delay: 0.0
-    freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
-    amp_ramp:
-      start: 1.0
-      end: 0.0
-      time: 1.0
-  op2:
-    ratio: 1.0
-    index: 1.0
-    freq_offset: 0.0
-    phase: 0.0
-    freq_env:
-      attack: 0.001
-      decay: 0.3
-      sustain: 0.0
-      release: 0.2
-      mul: 2.0
-    amp_env:
-      attack: 0.001
+      attack: 0.1
       decay: 1.5
-      sustain: 0.0
-      release: 0.5
-      mul: 1.5
-    freq_delay: 0.0
-    depth_delay: 0.0
-    freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
-    amp_ramp:
-      start: 1.0
-      end: 0.0
-      time: 1.0
-  op3:
-    ratio: 1.0
-    index: 0.699999988079071
-    freq_offset: 0.0
-    phase: 0.0
-    freq_env:
-      attack: 0.001
-      decay: 0.2
-      sustain: 0.0
-      release: 0.1
-      mul: 2.0
+      sustain: 0.6
+      release: 2.0
+      mul: 8.0
     amp_env:
-      attack: 0.001
-      decay: 0.5
-      sustain: 0.0
-      release: 0.3
-      mul: 0.8
-    freq_delay: 0.0
-    depth_delay: 0.0
-    freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
-    amp_ramp:
-      start: 1.0
-      end: 0.0
-      time: 1.0
-  op4:
-    ratio: 0.5
-    index: 1.0
-    freq_offset: 0.0
-    phase: 0.0
-    freq_env:
-      attack: 0.001
-      decay: 0.3
-      sustain: 0.0
-      release: 0.2
-      mul: 2.0
-    amp_env:
-      attack: 0.001
-      decay: 2.0
-      sustain: 0.0
-      release: 0.8
-      mul: 1.0
-    freq_delay: 0.0
-    depth_delay: 0.0
-    freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
-    amp_ramp:
-      start: 1.0
-      end: 0.20000000298023224
-      time: 1.0
-  op5:
-    ratio: 1.0
-    index: 0.800000011920929
-    freq_offset: 0.0
-    phase: 0.25
-    freq_env:
-      attack: 0.001
-      decay: 0.1
-      sustain: 0.0
-      release: 0.1
-      mul: 2.0
-    amp_env:
-      attack: 0.001
-      decay: 0.4
-      sustain: 0.0
-      release: 0.3
+      attack: 0.2
+      decay: 1.0
+      sustain: 0.7
+      release: 3.0
       mul: 0.9
     freq_delay: 0.0
-    depth_delay: 0.0010000000474974513
+    depth_delay: 0.0
     freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
+      start: 2.0
+      end: 0.5
+      time: 3.0
+      time_fine: 0.0
     amp_ramp:
-      start: 1.0
-      end: 0.0
-      time: 1.0
-  op6:
-    ratio: 1.0
-    index: 0.6000000238418579
-    freq_offset: 0.0
-    phase: 0.5
+      start: 0.5
+      end: 0.8
+      time: 2.0
+      time_fine: 0.0
+    feedback:
+      amount: 0.5
+      gain: 0.7
+      frequency: 12.0
+    delay:
+      dry_wet: 0.35
+      time: [0.33, 0.67, 1.0]
+      feedback: 0.45
+  op2:
+    ratio: 5.0
+    ratio_fine: -0.02
+    index: 2.0
+    index_fine: 0.3
+    freq_offset: -5.0
+    phase: 0.42
     freq_env:
-      attack: 0.001
-      decay: 0.05
-      sustain: 0.0
-      release: 0.05
-      mul: 2.0
+      attack: 0.05
+      decay: 0.6
+      sustain: 0.3
+      release: 1.0
+      mul: 6.0
     amp_env:
-      attack: 0.001
+      attack: 0.08
+      decay: 0.4
+      sustain: 0.5
+      release: 1.5
+      mul: 0.8
+    freq_delay: 0.03
+    depth_delay: 0.02
+    freq_ramp:
+      start: 1.0
+      end: 0.25
+      time: 1.0
+      time_fine: 0.0
+    amp_ramp:
+      start: 0.7
+      end: 1.0
+      time: 1.5
+      time_fine: 0.0
+    feedback:
+      amount: 0.6
+      gain: 0.8
+      frequency: -7.0
+    delay:
+      dry_wet: 0.4
+      time: [0.25, 0.5, 0.75]
+      feedback: 0.5
+  op3:
+    ratio: 8.0
+    ratio_fine: 0.01
+    index: 1.5
+    index_fine: 0.2
+    freq_offset: 2.0
+    phase: 0.75
+    freq_env:
+      attack: 0.01
       decay: 0.3
       sustain: 0.0
-      release: 0.2
-      mul: 0.7
-    freq_delay: 0.0
-    depth_delay: 0.0020000000949949026
+      release: 0.5
+      mul: 4.0
+    amp_env:
+      attack: 0.02
+      decay: 0.2
+      sustain: 0.0
+      release: 0.4
+      mul: 0.6
+    freq_delay: 0.01
+    depth_delay: 0.01
     freq_ramp:
-      start: 0.0
-      end: 0.0
-      time: 1.0
+      start: 3.0
+      end: 1.0
+      time: 0.05
+      time_fine: 0.0
     amp_ramp:
       start: 1.0
       end: 0.0
-      time: 0.800000011920929
+      time: 0.1
+      time_fine: 0.0
+    feedback:
+      amount: 0.4
+      gain: 0.6
+      frequency: 20.0
+    delay:
+      dry_wet: 0.25
+      time: [0.16, 0.33, 0.5]
+      feedback: 0.3
+  op4:
+    ratio: 0.5
+    ratio_fine: -0.05
+    index: 3.0
+    index_fine: 0.0
+    freq_offset: -2.0
+    phase: 0.33
+    freq_env:
+      attack: 0.4
+      decay: 1.2
+      sustain: 0.5
+      release: 2.0
+      mul: 5.0
+    amp_env:
+      attack: 0.3
+      decay: 0.8
+      sustain: 0.6
+      release: 2.5
+      mul: 0.7
+    freq_delay: 0.1
+    depth_delay: 0.1
+    freq_ramp:
+      start: 0.5
+      end: 1.5
+      time: 4.0
+      time_fine: 0.0
+    amp_ramp:
+      start: 0.6
+      end: 0.9
+      time: 3.0
+      time_fine: 0.0
+    feedback:
+      amount: 0.55
+      gain: 0.65
+      frequency: -15.0
+    delay:
+      dry_wet: 0.5
+      time: [0.5, 0.75, 1.0]
+      feedback: 0.6
   carrier:
     ratio: 1.0
+    ratio_fine: 0.0
     index: 0.0
+    index_fine: 0.0
     freq_offset: 0.0
     phase: 0.0
     freq_env:
-      attack: 0.001
-      decay: 0.1
-      sustain: 0.0
-      release: 0.1
+      attack: 0.2
+      decay: 0.8
+      sustain: 0.7
+      release: 3.0
       mul: 1.0
     amp_env:
-      attack: 0.001
-      decay: 4.0
-      sustain: 0.0
-      release: 0.8
-      mul: 0.4
+      attack: 0.3
+      decay: 0.6
+      sustain: 0.8
+      release: 4.0
+      mul: 0.5
     freq_delay: 0.0
     depth_delay: 0.0
     freq_ramp:
       start: 0.0
       end: 0.0
       time: 1.0
+      time_fine: 0.0
     amp_ramp:
-      start: 1.0
-      end: 0.0
-      time: 1.0
+      start: 0.8
+      end: 1.0
+      time: 5.0
+      time_fine: 0.0
+    feedback:
+      amount: 0.3
+      gain: 0.5
+      frequency: 0.0
+    delay:
+      dry_wet: 0.6
+      time: [1.0, 1.5, 2.0]
+      feedback: 0.7
