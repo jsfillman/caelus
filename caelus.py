@@ -36,7 +36,9 @@ class Oscillator:
         self.name = name
         self.role = role
         self.freq_ratio = Sig(ratio)       # Frequency ratio relative to base pitch (e.g., 2.0 = one octave higher)
+        self.freq_ratio_fine = Sig(0.0)    # Fine adjustment for frequency ratio
         self.mod_depth = Sig(index)        # Modulation depth/intensity - higher values create more harmonics
+        self.mod_depth_fine = Sig(0.0)     # Fine adjustment for modulation depth
         self.tuning_offset = Sig(freq_offset)  # Fine tuning adjustment in Hz
         
         # Waveform
@@ -58,14 +60,16 @@ class Oscillator:
         # Frequency ramp parameters
         self.freq_ramp_start = Sig(0.0)
         self.freq_ramp_end = Sig(0.0)
-        self.freq_ramp_time = Sig(1.0)
+        self.freq_ramp_time = Sig(1.0)       # Macro control for ramp time
+        self.freq_ramp_time_fine = Sig(0.0)  # Fine adjustment for ramp time
         self.freq_ramp = Linseg([(0, self.freq_ramp_start.value), 
                                 (self.freq_ramp_time.value, self.freq_ramp_end.value)])
         
         # Amplitude ramp parameters
         self.amp_ramp_start = Sig(1.0)
         self.amp_ramp_end = Sig(1.0)
-        self.amp_ramp_time = Sig(1.0)
+        self.amp_ramp_time = Sig(1.0)        # Macro control for ramp time
+        self.amp_ramp_time_fine = Sig(0.0)   # Fine adjustment for ramp time
         self.amp_ramp = Linseg([(0, self.amp_ramp_start.value), 
                                (self.amp_ramp_time.value, self.amp_ramp_end.value)])
         
@@ -80,24 +84,31 @@ class Oscillator:
         
     def update_ramps(self):
         """
-        Update ramp segments based on current parameter values.
-        
-        This ensures that whenever parameters change via GUI controls,
-        the ramp generators are updated with the new values.
+        Update ramp segments based on combined macro and fine parameter values.
         """
+        # Calculate combined ramp times (ensure they never go below minimum)
+        freq_time = max(0.001, self.freq_ramp_time.get() + self.freq_ramp_time_fine.get())
+        amp_time = max(0.001, self.amp_ramp_time.get() + self.amp_ramp_time_fine.get())
+        
         # Update frequency ramp
-        freq_time = max(0.01, self.freq_ramp_time.get())
         self.freq_ramp.setList([
             (0, self.freq_ramp_start.get()),
             (freq_time, self.freq_ramp_end.get())
         ])
         
         # Update amplitude ramp
-        amp_time = max(0.01, self.amp_ramp_time.get())
         self.amp_ramp.setList([
             (0, self.amp_ramp_start.get()),
             (amp_time, self.amp_ramp_end.get())
         ])
+    
+    def get_freq_ratio(self):
+        """Get the combined frequency ratio from macro and fine controls"""
+        return self.freq_ratio.get() + self.freq_ratio_fine.get()
+    
+    def get_mod_depth(self):
+        """Get the combined modulation depth from macro and fine controls"""
+        return self.mod_depth.get() + self.mod_depth_fine.get()
     
     def play(self):
         """
@@ -124,28 +135,79 @@ class Oscillator:
     
     def setup_gui(self):
         """
-        Create GUI controls for all parameters of this oscillator.
+        Create GUI controls for all parameters of this oscillator with proper value ranges and scaling.
         """
-        self.freq_ratio.ctrl(title=f"{self.name} Frequency Ratio")
-        self.mod_depth.ctrl(title=f"{self.name} Modulation Depth")
-        self.tuning_offset.ctrl(title=f"{self.name} Fine Tuning (Hz)")
+        from pyo import SLMap
         
+        # Frequency ratio - macro control (logarithmic scaling)
+        freq_ratio_map = SLMap(0.1, 20.0, 'log', 'value', self.freq_ratio.get())
+        self.freq_ratio.ctrl([freq_ratio_map], title=f"{self.name} Frequency Ratio")
+        
+        # Frequency ratio - fine tuning (±0.1 range, linear scaling)
+        freq_ratio_fine_map = SLMap(-0.1, 0.1, 'lin', 'value', self.freq_ratio_fine.get())
+        self.freq_ratio_fine.ctrl([freq_ratio_fine_map], title=f"{self.name} Freq Ratio Fine")
+        
+        # Modulation depth - macro control (logarithmic scaling)
+        # Use 0.01 as minimum for log scale to avoid log(0) issues
+        mod_depth_map = SLMap(0.01, 15.0, 'log', 'value', self.mod_depth.get())
+        self.mod_depth.ctrl([mod_depth_map], title=f"{self.name} Modulation Depth")
+        
+        # Modulation depth - fine tuning (linear scaling)
+        mod_depth_fine_map = SLMap(0.0, 2.0, 'lin', 'value', self.mod_depth_fine.get())
+        self.mod_depth_fine.ctrl([mod_depth_fine_map], title=f"{self.name} Mod Depth Fine")
+        
+        # Fine tuning (linear mapping)
+        tuning_map = SLMap(-100.0, 100.0, 'lin', 'value', self.tuning_offset.get())
+        self.tuning_offset.ctrl([tuning_map], title=f"{self.name} Fine Tuning (Hz)")
+        
+        # Phase (linear mapping)
+        phase_map = SLMap(0.0, 1.0, 'lin', 'value', self.phase.get())
+        self.phase.ctrl([phase_map], title=f"{self.name} Phase")
+        
+        # For ADSR envelopes, use the built-in control panel
+        # Do not attempt to create custom SLMap controls
         self.freq_env.ctrl(title=f"{self.name} Freq Env")
         self.amp_env.ctrl(title=f"{self.name} Amp Env")
         
-        self.freq_delay.ctrl(title=f"{self.name} Freq Delay (sec)")
-        self.depth_delay.ctrl(title=f"{self.name} Depth Delay (sec)")
+        # Envelope delays (logarithmic mapping for better control of short times)
+        # Use 0.001 as minimum for log scale to avoid log(0) issues
+        freq_delay_map = SLMap(0.001, 2.0, 'log', 'value', self.freq_delay.get())
+        self.freq_delay.ctrl([freq_delay_map], title=f"{self.name} Freq Delay (sec)")
         
-        self.freq_ramp_start.ctrl(title=f"{self.name} Freq Ramp Start")
-        self.freq_ramp_end.ctrl(title=f"{self.name} Freq Ramp End")
-        self.freq_ramp_time.ctrl(title=f"{self.name} Freq Ramp Time (sec)")
+        depth_delay_map = SLMap(0.001, 2.0, 'log', 'value', self.depth_delay.get())
+        self.depth_delay.ctrl([depth_delay_map], title=f"{self.name} Depth Delay (sec)")
         
-        self.amp_ramp_start.ctrl(title=f"{self.name} Amp Ramp Start")
-        self.amp_ramp_end.ctrl(title=f"{self.name} Amp Ramp End")
-        self.amp_ramp_time.ctrl(title=f"{self.name} Amp Ramp Time (sec)")
+        # Frequency ramp parameters (linear mapping for start/end values)
+        freq_ramp_start_map = SLMap(-12.0, 12.0, 'lin', 'value', self.freq_ramp_start.get())
+        freq_ramp_end_map = SLMap(-12.0, 12.0, 'lin', 'value', self.freq_ramp_end.get())
         
-        self.phase.ctrl(title=f"{self.name} Phase")
+        # Frequency ramp time - macro (up to 5 minutes, logarithmic for better control)
+        freq_ramp_time_map = SLMap(0.1, 300.0, 'log', 'value', self.freq_ramp_time.get())
         
+        # Frequency ramp time - fine (precise control for short ramps)
+        freq_ramp_time_fine_map = SLMap(-0.099, 5.0, 'lin', 'value', self.freq_ramp_time_fine.get())
+        
+        self.freq_ramp_start.ctrl([freq_ramp_start_map], title=f"{self.name} Freq Ramp Start")
+        self.freq_ramp_end.ctrl([freq_ramp_end_map], title=f"{self.name} Freq Ramp End")
+        self.freq_ramp_time.ctrl([freq_ramp_time_map], title=f"{self.name} Freq Ramp Time")
+        self.freq_ramp_time_fine.ctrl([freq_ramp_time_fine_map], title=f"{self.name} Freq Ramp Time Fine")
+        
+        # Amplitude ramp parameters (linear mapping for start/end values)
+        # Use a minimum slightly above 0 for better log scaling
+        amp_ramp_start_map = SLMap(0.01, 5.0, 'lin', 'value', self.amp_ramp_start.get())
+        amp_ramp_end_map = SLMap(0.01, 5.0, 'lin', 'value', self.amp_ramp_end.get())
+        
+        # Amplitude ramp time - macro (up to 5 minutes, logarithmic for better control)
+        amp_ramp_time_map = SLMap(0.1, 300.0, 'log', 'value', self.amp_ramp_time.get())
+        
+        # Amplitude ramp time - fine (precise control for short ramps)
+        amp_ramp_time_fine_map = SLMap(-0.099, 5.0, 'lin', 'value', self.amp_ramp_time_fine.get())
+        
+        self.amp_ramp_start.ctrl([amp_ramp_start_map], title=f"{self.name} Amp Ramp Start")
+        self.amp_ramp_end.ctrl([amp_ramp_end_map], title=f"{self.name} Amp Ramp End")
+        self.amp_ramp_time.ctrl([amp_ramp_time_map], title=f"{self.name} Amp Ramp Time")
+        self.amp_ramp_time_fine.ctrl([amp_ramp_time_fine_map], title=f"{self.name} Amp Ramp Time Fine")  
+ 
     def get_parameters(self):
         """
         Return a dictionary with all parameters for saving to a preset file.
@@ -155,7 +217,9 @@ class Oscillator:
         """
         params = {
             "ratio": self.freq_ratio.get(),
+            "ratio_fine": self.freq_ratio_fine.get(),
             "index": self.mod_depth.get(),
+            "index_fine": self.mod_depth_fine.get(),
             "freq_offset": self.tuning_offset.get(),
             "phase": self.phase.get(),
             
@@ -180,16 +244,18 @@ class Oscillator:
             "freq_ramp": {
                 "start": self.freq_ramp_start.get(),
                 "end": self.freq_ramp_end.get(),
-                "time": self.freq_ramp_time.get()
+                "time": self.freq_ramp_time.get(),
+                "time_fine": self.freq_ramp_time_fine.get()
             },
             "amp_ramp": {
                 "start": self.amp_ramp_start.get(),
                 "end": self.amp_ramp_end.get(),
-                "time": self.amp_ramp_time.get()
+                "time": self.amp_ramp_time.get(),
+                "time_fine": self.amp_ramp_time_fine.get()
             }
         }
         return params
-    
+        
     def load_parameters(self, params):
         """
         Load parameters from a dictionary (typically from a YAML preset file).
@@ -199,7 +265,9 @@ class Oscillator:
         """
         # Basic parameters
         self.freq_ratio.value = params.get("ratio", 1.0)
+        self.freq_ratio_fine.value = params.get("ratio_fine", 0.0)
         self.mod_depth.value = params.get("index", 1.0)
+        self.mod_depth_fine.value = params.get("index_fine", 0.0)
         self.tuning_offset.value = params.get("freq_offset", 0.0)
         self.phase.value = params.get("phase", 0.0)
         
@@ -227,15 +295,16 @@ class Oscillator:
         self.freq_ramp_start.value = freq_ramp_params.get("start", 0.0)
         self.freq_ramp_end.value = freq_ramp_params.get("end", 0.0)
         self.freq_ramp_time.value = freq_ramp_params.get("time", 1.0)
+        self.freq_ramp_time_fine.value = freq_ramp_params.get("time_fine", 0.0)
         
         amp_ramp_params = params.get("amp_ramp", {})
         self.amp_ramp_start.value = amp_ramp_params.get("start", 1.0)
         self.amp_ramp_end.value = amp_ramp_params.get("end", 1.0)
         self.amp_ramp_time.value = amp_ramp_params.get("time", 1.0)
+        self.amp_ramp_time_fine.value = amp_ramp_params.get("time_fine", 0.0)
         
         # Update ramps with the new parameters
         self.update_ramps()
-
 
 class Particle:
     """
@@ -504,11 +573,15 @@ class Particle:
             # We'll implement a serial chain with user-controllable modulation strength
             
             # Start with the first operator (unmodulated)
-            self.operators[0].base_freq = self.pitch * self.operators[0].freq_ratio + self.operators[0].tuning_offset
+            # Use the combined frequency ratio (macro + fine)
+            combined_ratio = self.operators[0].get_freq_ratio()
+            combined_depth = self.operators[0].get_mod_depth()
+            
+            self.operators[0].base_freq = self.pitch * combined_ratio + self.operators[0].tuning_offset.get()
             self.operators[0].freq = self.operators[0].base_freq + (self.operators[0].freq_ramp * self.pitch)
             
             # Scale modulation depth by base frequency, with GUI control
-            self.operators[0].amp = self.operators[0].base_freq * self.operators[0].mod_depth * \
+            self.operators[0].amp = self.operators[0].base_freq * combined_depth * \
                                     self.operators[0].amp_env * self.operators[0].amp_ramp * self.mod_gain
             
             self.operators[0].osc = Sine(
@@ -522,17 +595,21 @@ class Particle:
                 prev_op = self.operators[i-1]
                 curr_op = self.operators[i]
                 
+                # Get combined ratio and depth for this operator
+                combined_ratio = curr_op.get_freq_ratio()
+                combined_depth = curr_op.get_mod_depth()
+                
                 # Calculate base frequency (without modulation)
-                curr_op.base_freq = self.pitch * curr_op.freq_ratio + curr_op.tuning_offset
+                curr_op.base_freq = self.pitch * combined_ratio + curr_op.tuning_offset.get()
                 
                 # Apply modulation with GUI-controllable strength
-                mod_signal = prev_op.osc * (1.0 + curr_op.mod_depth) * self.mod_gain
+                mod_signal = prev_op.osc * (1.0 + combined_depth) * self.mod_gain
                 
                 # Apply frequency modulation from previous operator
                 curr_op.freq = curr_op.base_freq + (curr_op.freq_ramp * self.pitch) + mod_signal
                 
                 # Scale modulation depth by base frequency with GUI-controllable strength
-                curr_op.amp = curr_op.base_freq * curr_op.mod_depth * 1.5 * \
+                curr_op.amp = curr_op.base_freq * combined_depth * 1.5 * \
                             curr_op.amp_env * curr_op.amp_ramp * self.mod_gain
                 
                 # Create oscillator
@@ -543,7 +620,9 @@ class Particle:
             
             # Carrier is modulated by the last operator with GUI-controllable strength
             last_op = self.operators[-1]
-            self.carrier.base_freq = self.pitch * self.carrier.freq_ratio + self.carrier.tuning_offset
+            combined_ratio = self.carrier.get_freq_ratio()
+            
+            self.carrier.base_freq = self.pitch * combined_ratio + self.carrier.tuning_offset.get()
             
             # Apply modulation to carrier, with extra emphasis but still GUI-controllable 
             mod_signal = last_op.osc * self.mod_gain * 2.0
