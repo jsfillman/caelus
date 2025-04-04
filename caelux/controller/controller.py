@@ -106,6 +106,14 @@ class CaeluxController:
                 print("CONTROLLER: Sending note OFF to worker")
                 self.osc_client.send_message("/note", [0, 0])
                 self.current_note = None
+                
+        elif msg.type == 'polytouch':
+            # Only process polytouch for currently playing note
+            if msg.note == self.current_note:
+                # Normalize value to 0-1 range
+                touch_val = msg.value / 127.0
+                print(f"CONTROLLER: Sending polytouch: {touch_val:.2f}")
+                self.osc_client.send_message("/touch", [touch_val])
     
     def simulate_note_on(self, note=60, velocity=100):
         """Simulate a MIDI note for testing without a MIDI device"""

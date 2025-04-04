@@ -32,6 +32,10 @@ class CaeluxWorker:
         # Basic FM synth with carrier and one modulator
         self.pitch = Sig(440.0)        # Base frequency
         self.velocity = Sig(0.0)       # MIDI velocity (0-1)
+        self.aftertouch = Sig(0.0)     # Aftertouch value (0-1)
+        
+        # Store base values for parameters that can be affected by aftertouch
+        self.base_carrier_amp = 0.25   # Initial carrier amplitude
         
         # Modulator
         self.mod_ratio = Sig(2.0)      # Modulator/carrier frequency ratio
@@ -47,13 +51,14 @@ class CaeluxWorker:
         # Create the modulator oscillator
         self.modulator = Sine(freq=self.mod_freq, mul=self.mod_amp)
         
-        # Carrier envelope
-        self.carrier_env = Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=0.25)
+        # Carrier envelope with amplitude affected by aftertouch
+        self.carrier_env = Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=self.base_carrier_amp)
         
         # Create the carrier oscillator with FM from modulator
+        # Scale amplitude based on velocity and aftertouch
         self.carrier = Sine(
             freq=self.pitch + self.modulator,
-            mul=self.carrier_env * self.velocity
+            mul=self.carrier_env * self.velocity * (0.5 + self.aftertouch * 2.0)
         )
         
         # Output
@@ -79,6 +84,7 @@ class CaeluxWorker:
         dispatcher = Dispatcher()
         dispatcher.map("/note", self.handle_note)
         dispatcher.map("/adsr", self.handle_adsr)
+        dispatcher.map("/touch", self.handle_touch)  # Add polytouch handler
         
         # Start OSC server in a separate thread
         # Use the listen_port parameter to specify where to listen
@@ -101,7 +107,19 @@ class CaeluxWorker:
             self.mod_env.stop()
             self.carrier_env.stop()
             print("WORKER: Note OFF")
+    
+    def handle_touch(self, address, *args):
+        """Handle polytouch/aftertouch messages"""
+        touch_val = args[0]
         
+        print(f"WORKER: Received polytouch: {touch_val:.2f}")
+        
+        # Update aftertouch value to affect amplitude
+        self.aftertouch.value = touch_val
+        
+        # With the way we've set up the carrier oscillator, the amplitude
+        # will automatically update based on the aftertouch value
+    
     def handle_adsr(self, address, *args):
         """Handle ADSR parameter changes"""
         attack, decay, sustain, release = args
