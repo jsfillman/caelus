@@ -1,48 +1,135 @@
 # worker.py
 from pyo import *
 from pythonosc.dispatcher import Dispatcher
-from pythonosc.osc_server import BlockingOSCUDPServer
+from pythonosc.osc_server import ThreadingOSCUDPServer
+from pythonosc.udp_client import SimpleUDPClient
 import threading
+import time
+import numpy as np
 
-# --- Pyo Synth Engine ---
-s = Server().boot()
-s.start()
+class CaeluxWorker:
+    def __init__(self, controller_ip="127.0.0.1", controller_port=9003, listen_port=9004):
+        # Initialize pyo audio server 
+        self.server = Server().boot()
+        self.server.start()
+        
+        # OSC client to send audio data back to controller
+        self.osc_client = SimpleUDPClient(controller_ip, controller_port)
+        
+        # Save the port we'll listen on
+        self.listen_port = listen_port
+        
+        # Set up the synthesis engine
+        self.setup_synth()
+        
+        # Set up OSC server to receive control messages
+        self.setup_osc_server()
+        
+        print(f"Caelux worker initialized and ready - listening on port {self.listen_port}")
+    
+    def setup_synth(self):
+        """Set up the basic FM synthesis engine"""
+        # Basic FM synth with carrier and one modulator
+        self.pitch = Sig(440.0)        # Base frequency
+        self.velocity = Sig(0.0)       # MIDI velocity (0-1)
+        
+        # Modulator
+        self.mod_ratio = Sig(2.0)      # Modulator/carrier frequency ratio
+        self.mod_index = Sig(5.0)      # Modulation depth/index
+        
+        # ADSR envelope for modulator
+        self.mod_env = Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=1.0)
+        
+        # Calculate modulator frequency and amplitude
+        self.mod_freq = self.pitch * self.mod_ratio
+        self.mod_amp = self.pitch * self.mod_index * self.mod_env
+        
+        # Create the modulator oscillator
+        self.modulator = Sine(freq=self.mod_freq, mul=self.mod_amp)
+        
+        # Carrier envelope
+        self.carrier_env = Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=0.25)
+        
+        # Create the carrier oscillator with FM from modulator
+        self.carrier = Sine(
+            freq=self.pitch + self.modulator,
+            mul=self.carrier_env * self.velocity
+        )
+        
+        # Output
+        self.output = self.carrier
+        
+        # Create a panner for stereo output
+        self.panner = Pan(self.output, outs=2, pan=0.5).out()
+        
+        # Start a thread to periodically send audio back to controller
+        self.audio_thread = threading.Thread(target=self.audio_sender_loop, daemon=True)
+        self.audio_thread.start()
+    
+    def audio_sender_loop(self):
+        """Periodically send audio data back to controller"""
+        while True:
+            # In a real implementation, we would send actual audio data
+            # For now, just send a placeholder
+            self.osc_client.send_message("/audio", [0.0] * 256)  # Send 256 silence samples
+            time.sleep(0.1)  # 100ms intervals
+    
+    def setup_osc_server(self):
+        """Set up OSC server to receive control messages from controller"""
+        dispatcher = Dispatcher()
+        dispatcher.map("/note", self.handle_note)
+        dispatcher.map("/adsr", self.handle_adsr)
+        
+        # Start OSC server in a separate thread
+        # Use the listen_port parameter to specify where to listen
+        self.osc_server = ThreadingOSCUDPServer(("0.0.0.0", self.listen_port), dispatcher)
+        threading.Thread(target=self.osc_server.serve_forever, daemon=True).start()
+    
+    def handle_note(self, address, *args):
+        """Handle note on/off messages"""
+        freq, vel = args
+        
+        print(f"WORKER: Received note message on {address}: freq={freq}, vel={vel}")
+        
+        if freq > 0:  # Note on
+            self.pitch.value = freq
+            self.velocity.value = vel
+            self.mod_env.play()
+            self.carrier_env.play()
+            print(f"WORKER: Note ON: {freq:.1f} Hz, velocity: {vel:.2f}")
+        else:  # Note off
+            self.mod_env.stop()
+            self.carrier_env.stop()
+            print("WORKER: Note OFF")
+        
+    def handle_adsr(self, address, *args):
+        """Handle ADSR parameter changes"""
+        attack, decay, sustain, release = args
+        
+        # Update both envelopes
+        self.mod_env.attack = attack
+        self.mod_env.decay = decay
+        self.mod_env.sustain = sustain
+        self.mod_env.release = release
+        
+        self.carrier_env.attack = attack
+        self.carrier_env.decay = decay
+        self.carrier_env.sustain = sustain
+        self.carrier_env.release = release
+        
+        print(f"ADSR updated: A={attack:.3f}s, D={decay:.3f}s, S={sustain:.2f}, R={release:.3f}s")
 
-table = HarmTable([1])
-adsr = Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=1)
-osc = Osc(table=table, freq=0, mul=adsr).out()
 
-# --- OSC Handlers ---
-def handle_note(addr, *args):
-    freq, amp = args
-    if freq > 0:
-        osc.freq = freq
-        adsr.mul = amp
-        adsr.play()
-    else:
-        adsr.stop()
-
-def handle_adsr(addr, *args):
-    a, d, s_, r = args
-    adsr.attack = a
-    adsr.decay = d
-    adsr.sustain = s_
-    adsr.release = r
-    print(f"Set ADSR: A={a:.3f}, D={d:.3f}, S={s_:.3f}, R={r:.3f}")
-
-# --- OSC Setup ---
-dispatcher = Dispatcher()
-dispatcher.map("/note", handle_note)
-dispatcher.map("/adsr", handle_adsr)
-
-def start_osc_server():
-    server = BlockingOSCUDPServer(("127.0.0.1", 9000), dispatcher)
-    print("✅ OSC server running on port 9000...")
-    server.serve_forever()
-
-# Run OSC in background thread
-threading.Thread(target=start_osc_server, daemon=True).start()
-
-# Launch GUI
-s.gui(locals())
-
+# Main entry point
+if __name__ == "__main__":
+    try:
+        # Worker listens on port 9004, sends to controller on port 9003
+        worker = CaeluxWorker(controller_port=9003, listen_port=9004)
+        
+        # Keep the main thread running
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Worker shutting down...")
+    except Exception as e:
+        print(f"Error: {e}")
