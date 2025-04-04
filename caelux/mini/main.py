@@ -39,7 +39,10 @@ amp_env = pyo.Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=
 freq_adsr = pyo.Adsr(attack=0.01, decay=0.1, sustain=1.0, release=0.5, dur=0, mul=0)
 freq_linseg = pyo.Linseg([(0, 440), (1, 440)], loop=False)
 final_freq = freq_linseg + freq_adsr
-osc = pyo.Sine(freq=final_freq, mul=amp_env)
+
+# Placeholder for modulated frequency and osc
+modulated_freq = final_freq
+osc = pyo.Sine(freq=modulated_freq, mul=amp_env)
 
 # --------- Stereo Multitap Delay ---------
 def get_delays(slider_list):
@@ -56,7 +59,7 @@ current_note = {'note': None}
 
 # --------- MIDI HANDLER ---------
 def midi_loop():
-    global current_pitch_bend, sustain_on, note_is_held
+    global current_pitch_bend, sustain_on, note_is_held, osc
 
     for msg in midi_port.iter_pending():
         if msg.type == 'note_on' and msg.velocity > 0:
@@ -87,6 +90,23 @@ def midi_loop():
             freq_linseg.play()
             freq_adsr.play()
 
+            final_freq = freq_linseg + freq_adsr
+
+            # Feedback routing
+            source = gui.feedback_source.currentText()
+            depth = gui.feedback_depth.itemAt(1).widget().value()
+
+            if source == "Pre-Delay":
+                feedback_signal = osc
+            elif source == "Post-Delay":
+                feedback_signal = pyo.Mix(stereo, voices=1)
+            else:
+                feedback_signal = pyo.Sig(0)
+
+            modulated_freq = final_freq + (feedback_signal * depth)
+            osc.freq = modulated_freq
+
+            # Amplitude envelope
             amp_start = gui.amp_ramp_start.itemAt(1).widget().value()
             amp_end = gui.amp_ramp_end.itemAt(1).widget().value()
             amp_time = gui.amp_ramp_time.itemAt(1).widget().value()
@@ -140,5 +160,4 @@ def midi_loop():
 
 # Poll MIDI
 pat = pyo.Pattern(midi_loop, time=0.01).play()
-
 app.exec_()

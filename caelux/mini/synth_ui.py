@@ -14,6 +14,7 @@ class SynthUI(QWidget):
         layout.addWidget(self._make_freq_panel())
         layout.addWidget(self._make_amp_panel())
         layout.addWidget(self._make_delay_panel())
+        layout.addWidget(self._make_feedback_panel())
         self.setLayout(layout)
 
     def _make_slider(self, label, min_val, max_val, default, step=None):
@@ -113,6 +114,25 @@ class SynthUI(QWidget):
             vbox.addLayout(tap)
         vbox.addLayout(self.left_feedback)
         vbox.addLayout(self.right_feedback)
+
+        box.setLayout(vbox)
+        return box
+
+    def _make_feedback_panel(self):
+        box = QGroupBox("Feedback")
+        vbox = QVBoxLayout()
+
+        fb_layout = QHBoxLayout()
+        fb_label = QLabel("Feedback Source:")
+        self.feedback_source = QComboBox()
+        self.feedback_source.addItems(["Off", "Pre-Delay", "Post-Delay"])
+        fb_layout.addWidget(fb_label)
+        fb_layout.addWidget(self.feedback_source)
+        vbox.addLayout(fb_layout)
+
+        self.feedback_depth = self._make_slider("Feedback Depth", 0.0, 1000.0, 0.0)
+
+        vbox.addLayout(self.feedback_depth)
 
         box.setLayout(vbox)
         return box
