@@ -1,3 +1,4 @@
+
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QDoubleSpinBox,
     QGroupBox, QApplication, QComboBox
@@ -12,6 +13,7 @@ class SynthUI(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(self._make_freq_panel())
         layout.addWidget(self._make_amp_panel())
+        layout.addWidget(self._make_delay_panel())
         self.setLayout(layout)
 
     def _make_slider(self, label, min_val, max_val, default, step=None):
@@ -30,7 +32,6 @@ class SynthUI(QWidget):
         box = QGroupBox("Frequency Controls")
         vbox = QVBoxLayout()
 
-        # Frequency mode selection
         mode_layout = QHBoxLayout()
         mode_label = QLabel("Frequency Mode:")
         self.freq_mode = QComboBox()
@@ -39,23 +40,19 @@ class SynthUI(QWidget):
         mode_layout.addWidget(self.freq_mode)
         vbox.addLayout(mode_layout)
 
-        # Manual frequency input
         self.manual_freq = self._make_slider("Manual Frequency (Hz)", 0.01, 20000.0, 440.0)
         vbox.addLayout(self.manual_freq)
 
-        # Enable/disable manual freq input based on mode
         def toggle_manual_freq(index):
             self.manual_freq.itemAt(1).widget().setEnabled(index == 1)
 
         self.freq_mode.currentIndexChanged.connect(toggle_manual_freq)
-        toggle_manual_freq(self.freq_mode.currentIndex())  # Initialize state
+        toggle_manual_freq(self.freq_mode.currentIndex())
 
-        # Freq sweep & env
         self.start_rand = self._make_slider("Start Rand (Hz)", 0, 100, 0)
         self.start_slew = self._make_slider("Start Slew (Hz)", -1000, 1000, 0)
         self.end_slew = self._make_slider("End Slew (Hz)", -1000, 1000, 0)
         self.slew_time = self._make_slider("Slew Time (sec)", 0.01, 600, 0.01)
-
 
         self.freq_attack = self._make_slider("Freq Attack", 0.001, 10, 0.0)
         self.freq_decay = self._make_slider("Freq Decay", 0.001, 10, 0.0)
@@ -63,13 +60,12 @@ class SynthUI(QWidget):
         self.freq_release = self._make_slider("Freq Release", 0.001, 10, 0.0)
         self.freq_env_depth = self._make_slider("Freq Env Depth", 0, 2000, 0)
 
-
         for widget in [
             self.start_rand, self.start_slew, self.end_slew, self.slew_time,
-            self.freq_attack, self.freq_decay, self.freq_sustain, self.freq_release
+            self.freq_attack, self.freq_decay, self.freq_sustain, self.freq_release,
+            self.freq_env_depth
         ]:
             vbox.addLayout(widget)
-        vbox.addLayout(self.freq_env_depth)
 
         box.setLayout(vbox)
         return box
@@ -96,7 +92,31 @@ class SynthUI(QWidget):
         box.setLayout(vbox)
         return box
 
-# Run standalone for testing
+    def _make_delay_panel(self):
+        box = QGroupBox("Delay Controls (Stereo Multitap)")
+        vbox = QVBoxLayout()
+
+        self.left_delays = [
+            self._make_slider("Left Tap 1 (s)", 0.01, 2.0, 0.15),
+            self._make_slider("Left Tap 2 (s)", 0.01, 2.0, 0.35),
+            self._make_slider("Left Tap 3 (s)", 0.01, 2.0, 0.55)
+        ]
+        self.right_delays = [
+            self._make_slider("Right Tap 1 (s)", 0.01, 2.0, 0.2),
+            self._make_slider("Right Tap 2 (s)", 0.01, 2.0, 0.4),
+            self._make_slider("Right Tap 3 (s)", 0.01, 2.0, 0.6)
+        ]
+        self.left_feedback = self._make_slider("Left Feedback", 0.0, 0.99, 0.3)
+        self.right_feedback = self._make_slider("Right Feedback", 0.0, 0.99, 0.3)
+
+        for tap in self.left_delays + self.right_delays:
+            vbox.addLayout(tap)
+        vbox.addLayout(self.left_feedback)
+        vbox.addLayout(self.right_feedback)
+
+        box.setLayout(vbox)
+        return box
+
 if __name__ == "__main__":
     app = QApplication([])
     win = SynthUI()

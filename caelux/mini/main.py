@@ -1,3 +1,4 @@
+
 import pyo
 import mido
 import random
@@ -24,7 +25,7 @@ print(f"Using MIDI input: {midi_inputs[index]}")
 s = pyo.Server().boot()
 s.start()
 
-# State and config
+# State
 pitch_bend_range = 2  # semitones
 current_pitch_bend = 0.0
 sustain_on = False
@@ -37,10 +38,19 @@ amp_env = pyo.Adsr(attack=0.01, decay=0.1, sustain=0.7, release=0.5, dur=0, mul=
 # Freq control: ADSR (in Hz) + Linseg glide
 freq_adsr = pyo.Adsr(attack=0.01, decay=0.1, sustain=1.0, release=0.5, dur=0, mul=0)
 freq_linseg = pyo.Linseg([(0, 440), (1, 440)], loop=False)
-
-# Final freq = linseg + freq_env
 final_freq = freq_linseg + freq_adsr
-osc = pyo.Sine(freq=final_freq, mul=amp_env).out()
+osc = pyo.Sine(freq=final_freq, mul=amp_env)
+
+# --------- Stereo Multitap Delay ---------
+def get_delays(slider_list):
+    return [slider.itemAt(1).widget().value() for slider in slider_list]
+
+left_delay = pyo.Delay(osc, delay=[0.15, 0.35, 0.55], feedback=0.3, mul=0.3)
+right_delay = pyo.Delay(osc, delay=[0.2, 0.4, 0.6], feedback=0.3, mul=0.3)
+l_pan = pyo.Pan(left_delay, outs=2, pan=0.0)
+r_pan = pyo.Pan(right_delay, outs=2, pan=1.0)
+stereo = l_pan + r_pan
+stereo.out()
 
 current_note = {'note': None}
 
@@ -50,52 +60,50 @@ def midi_loop():
 
     for msg in midi_port.iter_pending():
         if msg.type == 'note_on' and msg.velocity > 0:
-            mode = gui.freq_mode.currentText()  # or .currentIndex()
-
-            # Enable manual osc hz mode
-            if mode == "Manual":
+            # Base frequency
+            if gui.freq_mode.currentText() == "Manual":
                 base = gui.manual_freq.itemAt(1).widget().value()
             else:
                 base = pyo.midiToHz(msg.note)
 
-
-            # Apply pitch bend
             bend_ratio = 2 ** (current_pitch_bend / 12.0)
             base *= bend_ratio
 
-            # Read Frequency Panel values
+            # GUI params
             start_rand = gui.start_rand.itemAt(1).widget().value()
             start_slew = gui.start_slew.itemAt(1).widget().value()
             end_slew = gui.end_slew.itemAt(1).widget().value()
             slew_time = gui.slew_time.itemAt(1).widget().value()
 
-            # Frequency ADSR
-            freq_adsr.mul = gui.freq_env_depth.itemAt(1).widget().value()
             freq_adsr.setAttack(gui.freq_attack.itemAt(1).widget().value())
             freq_adsr.setDecay(gui.freq_decay.itemAt(1).widget().value())
             freq_adsr.setSustain(gui.freq_sustain.itemAt(1).widget().value())
             freq_adsr.setRelease(gui.freq_release.itemAt(1).widget().value())
+            freq_adsr.mul = gui.freq_env_depth.itemAt(1).widget().value()
 
-            # Freq Linseg
             freq_start = base + start_slew + random.uniform(-start_rand, start_rand)
             freq_end = base + end_slew
             freq_linseg.list = [(0, freq_start), (slew_time, freq_end)]
             freq_linseg.play()
             freq_adsr.play()
 
-            # Amplitude ramp
             amp_start = gui.amp_ramp_start.itemAt(1).widget().value()
             amp_end = gui.amp_ramp_end.itemAt(1).widget().value()
             amp_time = gui.amp_ramp_time.itemAt(1).widget().value()
             amp_ramp.list = [(0, amp_start), (amp_time, amp_end)]
             amp_ramp.play()
 
-            # Amplitude ADSR
             amp_env.setAttack(gui.amp_attack.itemAt(1).widget().value())
             amp_env.setDecay(gui.amp_decay.itemAt(1).widget().value())
             amp_env.setSustain(gui.amp_sustain.itemAt(1).widget().value())
             amp_env.setRelease(gui.amp_release.itemAt(1).widget().value())
             amp_env.play()
+
+            # Delay update
+            left_delay.delay = get_delays(gui.left_delays)
+            right_delay.delay = get_delays(gui.right_delays)
+            left_delay.feedback = gui.left_feedback.itemAt(1).widget().value()
+            right_delay.feedback = gui.right_feedback.itemAt(1).widget().value()
 
             current_note['note'] = msg.note
             note_is_held = True
@@ -130,8 +138,7 @@ def midi_loop():
                     freq_adsr.stop()
                     current_note['note'] = None
 
-# MIDI polling
+# Poll MIDI
 pat = pyo.Pattern(midi_loop, time=0.01).play()
 
-# Start Pyo + Qt GUI
 app.exec_()
