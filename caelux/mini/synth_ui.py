@@ -1,4 +1,3 @@
-
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QDoubleSpinBox,
     QGroupBox, QApplication, QComboBox
@@ -49,6 +48,12 @@ class SynthUI(QWidget):
 
         self.freq_mode.currentIndexChanged.connect(toggle_manual_freq)
         toggle_manual_freq(self.freq_mode.currentIndex())
+        
+        # Add coarse and fine detune controls
+        self.coarse_detune = self._make_slider("Coarse Detune (semitones)", -24, 24, 0, 1)
+        self.fine_detune = self._make_slider("Fine Detune (cents)", -100, 100, 0, 1)
+        vbox.addLayout(self.coarse_detune)
+        vbox.addLayout(self.fine_detune)
 
         self.start_rand = self._make_slider("Start Rand (Hz)", 0, 100, 0)
         self.start_slew = self._make_slider("Start Slew (Hz)", -1000, 1000, 0)

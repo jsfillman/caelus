@@ -1,4 +1,3 @@
-
 import pyo
 import mido
 import random
@@ -63,12 +62,19 @@ def midi_loop():
 
     for msg in midi_port.iter_pending():
         if msg.type == 'note_on' and msg.velocity > 0:
-            # Base frequency
+            # Base frequency calculation based on mode
             if gui.freq_mode.currentText() == "Manual":
                 base = gui.manual_freq.itemAt(1).widget().value()
             else:
                 base = pyo.midiToHz(msg.note)
+                
+            # Apply detune (both coarse and fine)
+            coarse_detune = gui.coarse_detune.itemAt(1).widget().value()
+            fine_detune = gui.fine_detune.itemAt(1).widget().value() / 100.0  # Convert cents to semitones
+            detune_factor = 2 ** ((coarse_detune + fine_detune) / 12.0)
+            base *= detune_factor
 
+            # Apply pitch bend
             bend_ratio = 2 ** (current_pitch_bend / 12.0)
             base *= bend_ratio
 
