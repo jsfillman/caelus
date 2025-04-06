@@ -1,10 +1,15 @@
 import pyo
 import mido
 import random
+import atexit
 
 from PyQt5.QtWidgets import QApplication
 from synth_ui import SynthUI
 from wavetables import WaveformBank
+from settings import load_patch, save_patch
+
+# Default patch file
+PATCH_FILE = "last_patch.yaml"
 
 # --------- Qt App Setup First ---------
 app = QApplication([])
@@ -20,6 +25,15 @@ wave_bank.create_standard_tables()  # Create tables now that server is running
 # --------- GUI Setup ---------
 gui = SynthUI(s)  # Pass the server to SynthUI
 gui.show()
+
+# Load the last patch if available
+load_patch(PATCH_FILE, gui)
+
+# Register function to save patch on exit
+def save_on_exit():
+    save_patch(PATCH_FILE, gui)
+
+atexit.register(save_on_exit)
 
 # --------- MIDI SETUP ---------
 print("Available MIDI input ports:")
@@ -41,7 +55,6 @@ else:
     print("No MIDI devices found!")
     # Create a dummy MIDI port for testing
     midi_port = None
-
 
 # State
 pitch_bend_range = 2  # semitones
@@ -115,7 +128,7 @@ def midi_loop():
             # Apply pitch bend
             bend_ratio = 2 ** (current_pitch_bend / 12.0)
             base *= bend_ratio
-
+            
             # Now configure the oscillator bank
             wave_type = gui.wave_type.currentText()
             num_oscs = int(gui.num_oscs.itemAt(1).widget().value())
@@ -246,10 +259,6 @@ def midi_loop():
             
             # Update the filter resonance
             moog_filter.res = filter_res
-            
-            # Update the static filter parameters
-            moog_filter.freq = filter_ramp
-            moog_filter.res = filter_res
 
             # Feedback routing
             source = gui.feedback_source.currentText()
@@ -312,5 +321,8 @@ def midi_loop():
                     current_note['note'] = None
 
 # Poll MIDI
-pat = pyo.Pattern(midi_loop, time=0.01).play()
+if midi_port:
+    pat = pyo.Pattern(midi_loop, time=0.01).play()
+
+# Start the app
 app.exec_()
