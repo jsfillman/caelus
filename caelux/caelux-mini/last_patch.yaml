@@ -1,0 +1,47 @@
+patch:
+  particle1:
+    osc1:
+      amp_attack: 0.01
+      amp_decay: 0.301
+      amp_dist: Equal
+      amp_ramp_delay: 0.0
+      amp_ramp_end: 1.0
+      amp_ramp_start: 0.5
+      amp_ramp_time: 1.0
+      amp_release: 1.1
+      amp_sustain: 0.75
+      coarse_detune: 0.0
+      detune: 0.0
+      detune_mode: Linear
+      end_slew: 0.0
+      feedback_depth: 200.0
+      feedback_source: Post-Delay
+      filter_ramp_delay: 0.0
+      filter_ramp_end: 10000.0
+      filter_ramp_start: 100.0
+      filter_ramp_time: 0.5
+      filter_res: 0.3
+      fine_detune: 0.0
+      freq_attack: 0.201
+      freq_decay: 0.001
+      freq_env_depth: 20.0
+      freq_mode: MIDI Note
+      freq_release: 0.601
+      freq_sustain: 0.02
+      left_delay1: 0.129
+      left_delay2: 0.189
+      left_delay3: 0.309
+      left_feedback: 0.3
+      manual_freq: 440.0
+      num_oscs: 14.0
+      phase_spread: 0.0
+      right_delay1: 0.07
+      right_delay2: 0.169
+      right_delay3: 0.249
+      right_feedback: 0.3
+      slew_delay: 0.0
+      slew_time: 0.01
+      spread: 0.011
+      start_rand: 0.0
+      start_slew: 0.0
+      wave_type: saw
