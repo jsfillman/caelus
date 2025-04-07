@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer
 
-from synth_ui import SynthUI
+from synth_ui_updated import SynthUI
 from wavetables import WaveformBank
 from settings import load_patch, save_patch
 from audio_engine import AudioEngine
@@ -58,8 +58,8 @@ class MainWindow(QWidget):
         self.setLayout(main_layout)
         
         # Set the window size
-        self.setMinimumWidth(1500)
-        self.setMinimumHeight(600)
+        self.setMinimumWidth(1300)
+        self.setMinimumHeight(800)
         
         # Load the last patch if available
         load_patch(PATCH_FILE, self.synth_ui)

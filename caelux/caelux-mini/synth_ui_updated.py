@@ -34,8 +34,7 @@ class SynthUI(QWidget):
         
         # Create a horizontal layout for panels
         main_layout = QHBoxLayout(scroll_widget)
-        main_layout.setSpacing(20)
-
+        
         # Add panels in signal flow order
         main_layout.addWidget(self.make_oscillator_panel())
         main_layout.addWidget(self._make_freq_panel())
@@ -59,7 +58,7 @@ class SynthUI(QWidget):
         tab_layout.addWidget(scroll_area)
         
         # Set minimum width for consistent appearance
-        self.setMinimumWidth(1450)
+        self.setMinimumWidth(1200)
     
     def make_oscillator_panel(self):
         """Create controls for oscillator bank parameters"""
