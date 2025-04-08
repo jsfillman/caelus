@@ -128,17 +128,61 @@ class Oscillator:
         # Final stereo output
         self.stereo = self.width_processor
         
-        # Only output directly if carrier - operators will connect to modulation inputs
-        if self.osc_type == "carrier":
-            self.stereo.out()
+        # Create a dictionary to hold channel output destinations
+        # Default output channels: 0=L, 1=R, 2=L Rear, 3=R Rear
+        self.channel_amps = []
+        self.output_channels = 4  # 4 output channels (quad)
         
-        # Output for modulation when used as an operator
-        if self.osc_type == "operator":
-            # Get the signal respecting bypass settings
-            # Use the left delay selector which already handles filter/delay bypass
-            self.mod_output = self.left_delay_selector
-        else:
-            self.mod_output = None
+        # Instead of Send objects, we'll use amplitude controllers for each channel
+        for i in range(self.output_channels):
+            # Create gain control for each channel (0 by default)
+            channel_amp = pyo.SigTo(0, time=0.02)  # Smooth transitions for gain changes
+            self.channel_amps.append(channel_amp)
+            
+        # Debug output - we'll have an "out" object for direct testing of audio
+        if self.osc_type == "carrier":
+            # For direct testing, send carrier to output with 30% volume
+            self.direct_out = self.stereo * 0.3
+            self.direct_out.out()
+            print(f"Direct output enabled for {self.name}")
+        
+        # Route destinations - each oscillator can be routed to any channel or as a mod source
+        # Initialize with defaults based on oscillator type
+        self.routing = {
+            "destinations": [],  # List of (dest_name, amount) tuples
+            "default_dest": None  # Default destination when no specific routing
+        }
+        
+        # Set up default routing
+        if self.osc_type == "carrier":
+            # By default, route carriers to front L/R
+            if self.name == "CAR1":
+                # CAR1 to front L
+                self.routing["default_dest"] = ("channel_0", 1.0)
+            elif self.name == "CAR2":
+                # CAR2 to front R
+                self.routing["default_dest"] = ("channel_1", 1.0)
+            elif self.name == "CAR3":
+                # CAR3 to rear L
+                self.routing["default_dest"] = ("channel_2", 1.0)
+            elif self.name == "CAR4":
+                # CAR4 to rear R
+                self.routing["default_dest"] = ("channel_3", 1.0)
+            else:
+                # Default to front L/R if name doesn't match expected format
+                self.routing["default_dest"] = ("channel_0", 1.0)
+                
+            # Apply default routing
+            if self.routing["default_dest"]:
+                dest, amount = self.routing["default_dest"]
+                for i, amp in enumerate(self.channel_amps):
+                    if f"channel_{i}" == dest:
+                        amp.setValue(amount)
+        
+        # Output for modulation when used as an operator or a carrier
+        # Both operators and carriers can be mod sources in the new routing architecture
+        # Use the left delay selector which already handles filter/delay bypass
+        self.mod_output = self.left_delay_selector
         
         self.initialized = True
         return True
@@ -148,8 +192,12 @@ class Oscillator:
         if not self.initialized:
             return
             
+        # Print for debugging
+        print(f"Note ON - {self.name}: note={note}, velocity={velocity}")
+            
         # If oscillator section is bypassed, don't trigger any sound
         if self.osc_bypass:
+            print(f"{self.name} is bypassed, not triggering sound")
             return
             
         # Base frequency calculation based on mode
@@ -343,14 +391,18 @@ class Oscillator:
             self.amp_env.setDecay(gui.amp_decay.itemAt(1).widget().value())
             self.amp_env.setSustain(gui.amp_sustain.itemAt(1).widget().value())
             self.amp_env.setRelease(gui.amp_release.itemAt(1).widget().value())
+            self.amp_env.mul = 0.75  # Higher value for debug
             self.amp_env.play()
+            print(f"{self.name}: Playing with envelope A={self.amp_env.attack}, D={self.amp_env.decay}, S={self.amp_env.sustain}, R={self.amp_env.release}")
         else:
             # Constant amplitude when bypassed
             self.amp_env.setAttack(0.01)
             self.amp_env.setDecay(0.01)
             self.amp_env.setSustain(1.0)
             self.amp_env.setRelease(0.01)
+            self.amp_env.mul = 0.75  # Higher value for debug
             self.amp_env.play()
+            print(f"{self.name}: Playing with constant amplitude (bypass mode)")
 
         # Delay update if not bypassed
         if not self.delay_bypass:
@@ -406,10 +458,57 @@ class Oscillator:
         self._mod_signal = scaled_mod
     
     def get_mod_output(self):
-        """Get the modulation output signal (for operators)"""
-        if self.osc_type == "operator" and self.initialized:
+        """Get the modulation output signal (for operators or carriers)"""
+        if self.initialized:
             return self.mod_output
         return None
+            
+    def set_routing(self, destinations, clear_existing=True):
+        """Set the routing for this oscillator
+        
+        Args:
+            destinations: List of (destination, amount) tuples, where destination is
+                         either "channel_N" or an oscillator instance
+            clear_existing: Whether to clear existing routing before applying new routing
+        """
+        if not self.initialized:
+            return
+            
+        # Clear existing routing if requested
+        if clear_existing:
+            # Clear all amplitudes
+            for amp in self.channel_amps:
+                amp.setValue(0)
+                
+            # Clear destinations list
+            self.routing["destinations"] = []
+        
+        # Add new destinations
+        for dest, amount in destinations:
+            self.routing["destinations"].append((dest, amount))
+            
+            # Check if the destination is a channel number
+            if isinstance(dest, str) and dest.startswith("channel_"):
+                try:
+                    channel = int(dest.split("_")[1])
+                    if 0 <= channel < len(self.channel_amps):
+                        # Set the amount for this channel
+                        self.channel_amps[channel].setValue(amount)
+                except (ValueError, IndexError):
+                    print(f"Invalid channel: {dest}")
+                    
+    def add_routing(self, destination, amount=1.0):
+        """Add a routing destination without clearing existing routing
+        
+        Args:
+            destination: Either "channel_N" or an oscillator instance
+            amount: The amount to send to the destination
+        """
+        self.set_routing([(destination, amount)], clear_existing=False)
+            
+    def clear_routing(self):
+        """Clear all routing for this oscillator"""
+        self.set_routing([], clear_existing=True)
         
     def set_bypass(self, section, state):
         """Set bypass state for a specific section

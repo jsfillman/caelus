@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QDoubleSpinBox,
-    QGroupBox, QApplication, QComboBox, QScrollArea, QCheckBox
+    QGroupBox, QApplication, QComboBox, QScrollArea, QCheckBox,
+    QGridLayout
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from wavetables import WaveformBank
@@ -19,12 +20,17 @@ class OscillatorUI(QWidget):
     autopan_toggled_signal = pyqtSignal(bool)
     autopan_rate_changed_signal = pyqtSignal(float)
     
+    # Define signals for matrix routing
+    routing_changed_signal = pyqtSignal(str, str, float)  # source, destination, amount
+    channel_routing_changed_signal = pyqtSignal(str, int, float)  # oscillator, channel, amount
+    
     def __init__(self, server=None, osc_name="C1", osc_type="carrier"):
         super().__init__()
         
         # Store the server reference
         self.server = server
-        self.osc_name = osc_name
+        self.osc_name = osc_name  # This is the displayed name
+        self.name = osc_name      # This is the internal name used for routing
         self.osc_type = osc_type
         
         # Bypass state
@@ -173,18 +179,39 @@ class OscillatorUI(QWidget):
 
         # For Carrier, add a dedicated modulation controls section at the top
         if self.osc_type == "carrier":
-            mod_group = QGroupBox("Modulation")
+            mod_group = QGroupBox("Modulation Matrix")
             mod_layout = QVBoxLayout()
             
-            # Add modulation amount slider
-            self.mod_amount = self._make_slider("Modulation Amount", 0.0, 1000.0, 100.0, 1.0)
-            mod_layout.addLayout(self.mod_amount)
+            # For each possible modulation source, create a slider
+            # Currently we support OP1, CAR1, and CAR2 as mod sources
+            self.mod_sources = ["OP1", "CAR1", "CAR2"]
+            self.mod_amount_sliders = {}
             
-            # Add a note about what this controls
-            info_label = QLabel("Controls the amount of modulation from O1")
-            info_label.setWordWrap(True)
-            info_label.setStyleSheet("color: gray; font-size: 10px;")
-            mod_layout.addWidget(info_label)
+            # Add a grid for mod sources
+            for source in self.mod_sources:
+                # Skip self-modulation for simplicity
+                if source == self.name:
+                    print(f"Skipping self-modulation for {self.name}")
+                    continue
+                    
+                # Create a slider for this mod source
+                self.mod_amount_sliders[source] = self._make_slider(
+                    f"Mod from {source}", 0.0, 1000.0, 
+                    100.0 if source == "OP1" else 0.0,  # Default to 100 for OP1, 0 for others
+                    1.0
+                )
+                mod_layout.addLayout(self.mod_amount_sliders[source])
+                
+                # Connect the slider to the signal
+                slider = self.mod_amount_sliders[source].itemAt(1).widget()
+                # Use a lambda with default argument to avoid closure issues
+                slider.valueChanged.connect(
+                    lambda value, src=source: self._on_mod_amount_changed(src, value)
+                )
+            
+            # For backward compatibility, set the generic mod_amount to the OP1 amount
+            if "OP1" in self.mod_amount_sliders:
+                self.mod_amount = self.mod_amount_sliders["OP1"]
             
             mod_group.setLayout(mod_layout)
             vbox.addWidget(mod_group)
@@ -243,6 +270,11 @@ class OscillatorUI(QWidget):
 
         box.setLayout(vbox)
         return box
+        
+    def _on_mod_amount_changed(self, source, value):
+        """Handle modulation amount change from a source"""
+        # Emit signal with source, destination (self), and amount
+        self.routing_changed_signal.emit(source, self.name, value)
 
     def _make_amp_panel(self):
         box = QGroupBox("Amplitude Controls")
@@ -367,9 +399,50 @@ class OscillatorUI(QWidget):
         return box
         
     def _make_panner_panel(self):
-        """Create controls for the stereo panner"""
-        box = QGroupBox("Stereo Panner")
+        """Create controls for the stereo panner and routing"""
+        box = QGroupBox("Output Routing")
         vbox = QVBoxLayout()
+        
+        # Only show output routing for carriers
+        if self.osc_type == "carrier":
+            # Create a routing group
+            routing_group = QGroupBox("Channel Routing")
+            routing_layout = QVBoxLayout()
+            
+            # Create sliders for each output channel
+            self.channel_sliders = []
+            
+            # Define the output channels 
+            channel_names = ["Front Left", "Front Right", "Rear Left", "Rear Right"]
+            
+            # Default value for current carrier (1.0 for its default channel, 0 for others)
+            def get_default_value(channel):
+                if self.name == "CAR1" and channel == 0:  # CAR1 -> Front Left
+                    return 1.0
+                elif self.name == "CAR2" and channel == 1:  # CAR2 -> Front Right
+                    return 1.0
+                # Future carriers would go to rear channels
+                elif self.name == "CAR3" and channel == 2:  # CAR3 -> Rear Left
+                    return 1.0
+                elif self.name == "CAR4" and channel == 3:  # CAR4 -> Rear Right
+                    return 1.0
+                return 0.0
+            
+            # Create controls for each channel
+            for i, name in enumerate(channel_names):
+                slider = self._make_slider(f"{name} (Ch {i+1})", 0.0, 1.0, get_default_value(i), 0.01)
+                routing_layout.addLayout(slider)
+                self.channel_sliders.append(slider)
+                
+                # Connect the slider to channel routing signal
+                channel_slider = slider.itemAt(1).widget()
+                # Use lambda with default argument to avoid closure issues
+                channel_slider.valueChanged.connect(
+                    lambda value, ch=i: self._on_channel_routing_changed(ch, value)
+                )
+            
+            routing_group.setLayout(routing_layout)
+            vbox.addWidget(routing_group)
         
         # Pan position slider
         self.pan_position = self._make_slider("Pan Position", 0.0, 1.0, 0.5, 0.01)
@@ -398,6 +471,11 @@ class OscillatorUI(QWidget):
         
         box.setLayout(vbox)
         return box
+        
+    def _on_channel_routing_changed(self, channel, value):
+        """Handle channel routing amount change"""
+        # Emit signal with oscillator name, channel, and amount
+        self.channel_routing_changed_signal.emit(self.name, channel, value)
     
     # Event handlers for bypass checkboxes
     def _on_osc_bypass_changed(self, state):
