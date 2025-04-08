@@ -60,6 +60,9 @@ class MainWindow(QWidget):
         self.tabs.addTab(self.car1_ui, "C1")
         self.tabs.setTabToolTip(2, "Carrier 1")
         
+        # Connect bypass signals to oscillator methods
+        self.connect_bypass_signals()
+        
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
         
@@ -88,6 +91,41 @@ class MainWindow(QWidget):
         
         # Connect other MIDI signals as needed
         self.midi_handler.pitch_bend_signal.connect(self.particle.pitch_bend)
+        
+    def connect_bypass_signals(self):
+        """Connect UI bypass signals to oscillator bypass methods"""
+        if not hasattr(self, 'particle') or not self.particle.initialized:
+            return
+            
+        # Connect OP1 bypass signals
+        if "OP1" in self.particle.oscillators:
+            op1 = self.particle.oscillators["OP1"]
+            self.op1_ui.osc_bypass_toggled.connect(lambda state: op1.set_bypass('osc', state))
+            self.op1_ui.freq_bypass_toggled.connect(lambda state: op1.set_bypass('freq', state))
+            self.op1_ui.amp_bypass_toggled.connect(lambda state: op1.set_bypass('amp', state))
+            self.op1_ui.filter_bypass_toggled.connect(lambda state: op1.set_bypass('filter', state))
+            self.op1_ui.delay_bypass_toggled.connect(lambda state: op1.set_bypass('delay', state))
+            
+            # Connect panner signals
+            self.op1_ui.pan_position_changed_signal.connect(op1.set_pan_position)
+            self.op1_ui.stereo_width_changed_signal.connect(op1.set_stereo_width)
+            self.op1_ui.autopan_toggled_signal.connect(lambda enabled: op1.set_autopan(enabled))
+            self.op1_ui.autopan_rate_changed_signal.connect(lambda rate: op1.set_autopan(op1.use_autopan, rate))
+            
+        # Connect CAR1 bypass signals
+        if "CAR1" in self.particle.oscillators:
+            car1 = self.particle.oscillators["CAR1"]
+            self.car1_ui.osc_bypass_toggled.connect(lambda state: car1.set_bypass('osc', state))
+            self.car1_ui.freq_bypass_toggled.connect(lambda state: car1.set_bypass('freq', state))
+            self.car1_ui.amp_bypass_toggled.connect(lambda state: car1.set_bypass('amp', state))
+            self.car1_ui.filter_bypass_toggled.connect(lambda state: car1.set_bypass('filter', state))
+            self.car1_ui.delay_bypass_toggled.connect(lambda state: car1.set_bypass('delay', state))
+            
+            # Connect panner signals
+            self.car1_ui.pan_position_changed_signal.connect(car1.set_pan_position)
+            self.car1_ui.stereo_width_changed_signal.connect(car1.set_stereo_width)
+            self.car1_ui.autopan_toggled_signal.connect(lambda enabled: car1.set_autopan(enabled))
+            self.car1_ui.autopan_rate_changed_signal.connect(lambda rate: car1.set_autopan(car1.use_autopan, rate))
     
     def handle_note_on(self, note, velocity):
         """Handle note on by passing parameters from UI"""
@@ -437,9 +475,39 @@ class MainWindow(QWidget):
             # Apply to each oscillator UI
             if "op1" in patch:
                 self._set_osc_params(self.op1_ui, patch["op1"])
+                # Apply bypass states to the actual oscillator
+                if "OP1" in self.particle.oscillators:
+                    op1 = self.particle.oscillators["OP1"]
+                    # Apply bypass states
+                    if "bypass" in patch["op1"]:
+                        for section, state in patch["op1"]["bypass"].items():
+                            op1.set_bypass(section, state)
+                    # Apply panner settings
+                    if "pan_position" in patch["op1"]:
+                        op1.set_pan_position(patch["op1"]["pan_position"])
+                    if "stereo_width" in patch["op1"]:
+                        op1.set_stereo_width(patch["op1"]["stereo_width"])
+                    if "autopan_enabled" in patch["op1"]:
+                        op1.set_autopan(patch["op1"]["autopan_enabled"],
+                                        patch["op1"].get("autopan_rate", None))
                 
             if "car1" in patch:
                 self._set_osc_params(self.car1_ui, patch["car1"])
+                # Apply bypass states to the actual oscillator
+                if "CAR1" in self.particle.oscillators:
+                    car1 = self.particle.oscillators["CAR1"]
+                    # Apply bypass states
+                    if "bypass" in patch["car1"]:
+                        for section, state in patch["car1"]["bypass"].items():
+                            car1.set_bypass(section, state)
+                    # Apply panner settings
+                    if "pan_position" in patch["car1"]:
+                        car1.set_pan_position(patch["car1"]["pan_position"])
+                    if "stereo_width" in patch["car1"]:
+                        car1.set_stereo_width(patch["car1"]["stereo_width"])
+                    if "autopan_enabled" in patch["car1"]:
+                        car1.set_autopan(patch["car1"]["autopan_enabled"],
+                                        patch["car1"].get("autopan_rate", None))
                 
             print(f"Patch loaded from {PATCH_FILE}")
         except Exception as e:
@@ -448,6 +516,15 @@ class MainWindow(QWidget):
     def _get_osc_params(self, ui):
         """Extract parameters from an oscillator UI"""
         params = {}
+        
+        # Get bypass states
+        params["bypass"] = {
+            "osc": ui.bypass_state['osc'],
+            "freq": ui.bypass_state['freq'],
+            "amp": ui.bypass_state['amp'],
+            "filter": ui.bypass_state['filter'],
+            "delay": ui.bypass_state['delay']
+        }
         
         # Extract all parameters from the UI
         params["wave_type"] = ui.wave_type.currentText()
@@ -509,12 +586,23 @@ class MainWindow(QWidget):
         params["left_feedback"] = ui.left_feedback.itemAt(1).widget().value()
         params["right_feedback"] = ui.right_feedback.itemAt(1).widget().value()
         
+        # Panner parameters
+        params["pan_position"] = ui.pan_position.itemAt(1).widget().value()
+        params["stereo_width"] = ui.stereo_width.itemAt(1).widget().value()
+        params["autopan_enabled"] = ui.autopan_checkbox.isChecked()
+        params["autopan_rate"] = ui.autopan_rate.itemAt(1).widget().value()
+        
         return params
     
     def _set_osc_params(self, ui, params):
         """Apply parameters to an oscillator UI"""
         if not params:
             return
+            
+        # Set bypass states if available
+        if "bypass" in params:
+            for section, state in params["bypass"].items():
+                ui.set_bypass_state(section, state)
             
         # Apply all parameters to the UI
         if "wave_type" in params:
@@ -602,6 +690,13 @@ class MainWindow(QWidget):
                 
         self._set_value(ui.left_feedback, params.get("left_feedback"))
         self._set_value(ui.right_feedback, params.get("right_feedback"))
+        
+        # Set panner parameters
+        self._set_value(ui.pan_position, params.get("pan_position"))
+        self._set_value(ui.stereo_width, params.get("stereo_width"))
+        if "autopan_enabled" in params:
+            ui.autopan_checkbox.setChecked(params["autopan_enabled"])
+        self._set_value(ui.autopan_rate, params.get("autopan_rate"))
     
     def _set_value(self, slider_layout, value):
         """Helper to set a value in a slider layout"""

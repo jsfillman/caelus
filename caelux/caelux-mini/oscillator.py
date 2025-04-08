@@ -10,9 +10,17 @@ class Oscillator:
     
     def __init__(self, server=None, name="OSC1", osc_type="carrier"):
         """Initialize the oscillator with server reference and type"""
+        self.initialized = False  # Set initialized flag to False initially
         self.server = server
         self.name = name
         self.osc_type = osc_type  # "carrier" or "operator"
+        
+        # Bypass flags for each section
+        self.osc_bypass = False
+        self.freq_bypass = False
+        self.amp_bypass = False
+        self.filter_bypass = False
+        self.delay_bypass = False
         
         # Initialize only if server is provided and running
         if self.server and self.server.getIsStarted():
@@ -64,18 +72,61 @@ class Oscillator:
             mul=self.amp_env
         )
 
-        # Filter
+        # Filter with bypass capability
         self.filter_ramp = pyo.Linseg([(0, 100), (1, 5000)], loop=False)
         self.moog_filter = pyo.MoogLP(self.osc, freq=self.filter_ramp, res=0.3)
+        # Selector for filter bypass
+        self.filter_selector = pyo.Selector([self.osc, self.moog_filter], voice=1)
 
-        # Delay
-        self.left_delay = pyo.Delay(self.moog_filter, delay=[0.15, 0.35, 0.55], feedback=0.3, mul=0.3)
-        self.right_delay = pyo.Delay(self.moog_filter, delay=[0.2, 0.4, 0.6], feedback=0.3, mul=0.3)
+        # Delay with bypass capability
+        self.left_delay = pyo.Delay(self.filter_selector, delay=[0.15, 0.35, 0.55], feedback=0.3, mul=0.3)
+        self.right_delay = pyo.Delay(self.filter_selector, delay=[0.2, 0.4, 0.6], feedback=0.3, mul=0.3)
+        # Selectors for delay bypass
+        self.left_delay_selector = pyo.Selector([self.filter_selector, self.left_delay], voice=1)
+        self.right_delay_selector = pyo.Selector([self.filter_selector, self.right_delay], voice=1)
         
-        # Output panning
-        self.l_pan = pyo.Pan(self.left_delay, outs=2, pan=0.0)
-        self.r_pan = pyo.Pan(self.right_delay, outs=2, pan=1.0)
-        self.stereo = self.l_pan + self.r_pan
+        # Simplified stereo panner implementation
+        # Create mono signals from left and right
+        self.mono_left = pyo.Mix(self.left_delay_selector, voices=1)
+        self.mono_right = pyo.Mix(self.right_delay_selector, voices=1)
+        
+        # Default stereo width (0=mono, 1=full stereo)
+        self.stereo_width = 1.0
+        
+        # LFO for autopanning (Sine wave by default, 0-1 range)
+        self.pan_lfo = pyo.Sine(freq=0.2, mul=0.5, add=0.5)
+        self.use_autopan = False  # Default to manual panning
+        
+        # Pan position (default center)
+        self.pan_pos = pyo.Sig(0.5)
+        
+        # Select between manual and auto panning
+        self.pan_selector = pyo.Selector([self.pan_pos, self.pan_lfo], voice=0)
+        
+        # Pan control for left and right channels
+        self.pan_left = pyo.SigTo(1.0, time=0.02)  # Smoothed control signal
+        self.pan_right = pyo.SigTo(1.0, time=0.02)  # Smoothed control signal
+        
+        # Initialize pan position (center)
+        # Calculate equal-power panning values for center position
+        left_gain = 0.707  # sqrt(0.5)
+        right_gain = 0.707
+        
+        # Set the pan gains directly using setValue()
+        self.pan_left.setValue(left_gain)
+        self.pan_right.setValue(right_gain)
+        
+        # Final stereo output with left and right balance
+        self.l_out = self.mono_left * self.pan_left
+        self.r_out = self.mono_right * self.pan_right
+        
+        # Width control using Interp to mix between mono and stereo
+        self.mono_mix = (self.mono_left + self.mono_right) * 0.5
+        self.stereo_mix = pyo.Mix([self.l_out, self.r_out], voices=2)
+        self.width_processor = pyo.Interp(self.mono_mix, self.stereo_mix, interp=self.stereo_width)
+        
+        # Final stereo output
+        self.stereo = self.width_processor
         
         # Only output directly if carrier - operators will connect to modulation inputs
         if self.osc_type == "carrier":
@@ -83,9 +134,9 @@ class Oscillator:
         
         # Output for modulation when used as an operator
         if self.osc_type == "operator":
-            # Get the raw signal from the left channel before any panning
-            # This gives a stronger modulation signal directly from the oscillator
-            self.mod_output = self.left_delay
+            # Get the signal respecting bypass settings
+            # Use the left delay selector which already handles filter/delay bypass
+            self.mod_output = self.left_delay_selector
         else:
             self.mod_output = None
         
@@ -97,21 +148,26 @@ class Oscillator:
         if not self.initialized:
             return
             
+        # If oscillator section is bypassed, don't trigger any sound
+        if self.osc_bypass:
+            return
+            
         # Base frequency calculation based on mode
         if gui.freq_mode.currentText() == "Manual":
             base = gui.manual_freq.itemAt(1).widget().value()
         else:
             base = pyo.midiToHz(note)
             
-        # Apply detune (both coarse and fine)
-        coarse_detune = gui.coarse_detune.itemAt(1).widget().value()
-        fine_detune = gui.fine_detune.itemAt(1).widget().value() / 100.0  # Convert cents to semitones
-        detune_factor = 2 ** ((coarse_detune + fine_detune) / 12.0)
-        base *= detune_factor
+        # Apply detune (both coarse and fine) only if frequency processing is not bypassed
+        if not self.freq_bypass:
+            coarse_detune = gui.coarse_detune.itemAt(1).widget().value()
+            fine_detune = gui.fine_detune.itemAt(1).widget().value() / 100.0  # Convert cents to semitones
+            detune_factor = 2 ** ((coarse_detune + fine_detune) / 12.0)
+            base *= detune_factor
 
-        # Apply pitch bend
-        bend_ratio = 2 ** (self.current_pitch_bend / 12.0)
-        base *= bend_ratio
+            # Apply pitch bend
+            bend_ratio = 2 ** (self.current_pitch_bend / 12.0)
+            base *= bend_ratio
         
         # Now configure the oscillator bank
         wave_type = gui.wave_type.currentText()
@@ -179,80 +235,101 @@ class Oscillator:
         self.osc.mul = [self.amp_env * amp for amp in base_amps]
         self.osc.phase = phases
 
-        # Get parameters from GUI for frequency
-        start_rand = gui.start_rand.itemAt(1).widget().value()
-        start_slew = gui.start_slew.itemAt(1).widget().value()
-        end_slew = gui.end_slew.itemAt(1).widget().value()
-        slew_time = gui.slew_time.itemAt(1).widget().value()
-        slew_delay = gui.slew_delay.itemAt(1).widget().value()
+        # Apply frequency modulation if not bypassed
+        if not self.freq_bypass:
+            # Get parameters from GUI for frequency
+            start_rand = gui.start_rand.itemAt(1).widget().value()
+            start_slew = gui.start_slew.itemAt(1).widget().value()
+            end_slew = gui.end_slew.itemAt(1).widget().value()
+            slew_time = gui.slew_time.itemAt(1).widget().value()
+            slew_delay = gui.slew_delay.itemAt(1).widget().value()
 
-        # Configure frequency ADSR
-        self.freq_adsr.setAttack(gui.freq_attack.itemAt(1).widget().value())
-        self.freq_adsr.setDecay(gui.freq_decay.itemAt(1).widget().value())
-        self.freq_adsr.setSustain(gui.freq_sustain.itemAt(1).widget().value())
-        self.freq_adsr.setRelease(gui.freq_release.itemAt(1).widget().value())
-        
-        # Set frequency envelope depth/intensity
-        freq_env_depth = gui.freq_env_depth.itemAt(1).widget().value()
-        self.freq_adsr.mul = freq_env_depth
-        
-        # Calculate frequencies with randomization
-        freq_start = base + start_slew + random.uniform(-start_rand, start_rand)
-        freq_end = base + end_slew
-        
-        # Set up the Linseg with delay before ramping
-        if slew_delay > 0:
-            self.freq_linseg.list = [(0, freq_start), (slew_delay, freq_start), 
-                                     (slew_delay + slew_time, freq_end)]
-        else:
-            self.freq_linseg.list = [(0, freq_start), (slew_time, freq_end)]
+            # Configure frequency ADSR
+            self.freq_adsr.setAttack(gui.freq_attack.itemAt(1).widget().value())
+            self.freq_adsr.setDecay(gui.freq_decay.itemAt(1).widget().value())
+            self.freq_adsr.setSustain(gui.freq_sustain.itemAt(1).widget().value())
+            self.freq_adsr.setRelease(gui.freq_release.itemAt(1).widget().value())
             
-        self.freq_linseg.play()
-        self.freq_adsr.play()
+            # Set frequency envelope depth/intensity
+            freq_env_depth = gui.freq_env_depth.itemAt(1).widget().value()
+            self.freq_adsr.mul = freq_env_depth
+            
+            # Calculate frequencies with randomization
+            freq_start = base + start_slew + random.uniform(-start_rand, start_rand)
+            freq_end = base + end_slew
+            
+            # Set up the Linseg with delay before ramping
+            if slew_delay > 0:
+                self.freq_linseg.list = [(0, freq_start), (slew_delay, freq_start), 
+                                         (slew_delay + slew_time, freq_end)]
+            else:
+                self.freq_linseg.list = [(0, freq_start), (slew_time, freq_end)]
+                
+            self.freq_linseg.play()
+            self.freq_adsr.play()
+        else:
+            # If bypassed, just set a constant frequency
+            self.freq_linseg.list = [(0, base)]
+            self.freq_linseg.play()
+            self.freq_adsr.mul = 0  # Disable frequency envelope
 
-        # Get amplitude ramp parameters including the new delay
-        amp_start = gui.amp_ramp_start.itemAt(1).widget().value()
-        amp_end = gui.amp_ramp_end.itemAt(1).widget().value()
-        amp_time = gui.amp_ramp_time.itemAt(1).widget().value()
-        amp_delay = gui.amp_ramp_delay.itemAt(1).widget().value()
-        
-        # Set up amplitude ramp with delay
-        if amp_delay > 0:
-            self.amp_ramp.list = [(0, amp_start), (amp_delay, amp_start), 
-                                 (amp_delay + amp_time, amp_end)]
-        else:
-            self.amp_ramp.list = [(0, amp_start), (amp_time, amp_end)]
+        # Apply amplitude envelope if not bypassed
+        if not self.amp_bypass:
+            # Get amplitude ramp parameters including the new delay
+            amp_start = gui.amp_ramp_start.itemAt(1).widget().value()
+            amp_end = gui.amp_ramp_end.itemAt(1).widget().value()
+            amp_time = gui.amp_ramp_time.itemAt(1).widget().value()
+            amp_delay = gui.amp_ramp_delay.itemAt(1).widget().value()
             
-        self.amp_ramp.play()
+            # Set up amplitude ramp with delay
+            if amp_delay > 0:
+                self.amp_ramp.list = [(0, amp_start), (amp_delay, amp_start), 
+                                     (amp_delay + amp_time, amp_end)]
+            else:
+                self.amp_ramp.list = [(0, amp_start), (amp_time, amp_end)]
+                
+            self.amp_ramp.play()
+        else:
+            # If bypassed, use constant amplitude
+            self.amp_ramp.list = [(0, 1.0)]
+            self.amp_ramp.play()
 
-        # Configure filter parameters
-        filter_res = gui.filter_res.itemAt(1).widget().value()
-        
-        # Get filter ramp parameters
-        filter_start = gui.filter_ramp_start.itemAt(1).widget().value()
-        filter_end = gui.filter_ramp_end.itemAt(1).widget().value()
-        filter_time = gui.filter_ramp_time.itemAt(1).widget().value()
-        filter_delay = gui.filter_ramp_delay.itemAt(1).widget().value()
-        
-        # Set up filter ramp with delay
-        if filter_delay > 0:
-            self.filter_ramp.list = [(0, filter_start), (filter_delay, filter_start), 
-                                    (filter_delay + filter_time, filter_end)]
-        else:
-            self.filter_ramp.list = [(0, filter_start), (filter_time, filter_end)]
+        # Apply filter if not bypassed
+        if not self.filter_bypass:
+            # Configure filter parameters
+            filter_res = gui.filter_res.itemAt(1).widget().value()
             
-        self.filter_ramp.play()
-        
-        # Update the filter resonance
-        self.moog_filter.res = filter_res
+            # Get filter ramp parameters
+            filter_start = gui.filter_ramp_start.itemAt(1).widget().value()
+            filter_end = gui.filter_ramp_end.itemAt(1).widget().value()
+            filter_time = gui.filter_ramp_time.itemAt(1).widget().value()
+            filter_delay = gui.filter_ramp_delay.itemAt(1).widget().value()
+            
+            # Set up filter ramp with delay
+            if filter_delay > 0:
+                self.filter_ramp.list = [(0, filter_start), (filter_delay, filter_start), 
+                                        (filter_delay + filter_time, filter_end)]
+            else:
+                self.filter_ramp.list = [(0, filter_start), (filter_time, filter_end)]
+                
+            self.filter_ramp.play()
+            
+            # Update the filter resonance
+            self.moog_filter.res = filter_res
+            
+            # Ensure filter is in the signal chain
+            self.filter_selector.voice = 1
+        else:
+            # When bypassed, use voice 0 which bypasses the filter
+            self.filter_selector.voice = 0
 
         # Feedback routing
         source = gui.feedback_source.currentText()
         depth = gui.feedback_depth.itemAt(1).widget().value()
 
-        if source == "Pre-Delay":
+        if source == "Pre-Delay" and not self.filter_bypass:
             feedback_signal = self.moog_filter  # Use the filter output
-        elif source == "Post-Delay":
+        elif source == "Post-Delay" and not self.delay_bypass:
             feedback_signal = pyo.Mix(self.stereo, voices=1)
         else:
             feedback_signal = pyo.Sig(0)
@@ -260,18 +337,35 @@ class Oscillator:
         self.modulated_freq = self.final_freq + (feedback_signal * depth)
         self.osc.freq = self.modulated_freq
 
-        # Amplitude envelope
-        self.amp_env.setAttack(gui.amp_attack.itemAt(1).widget().value())
-        self.amp_env.setDecay(gui.amp_decay.itemAt(1).widget().value())
-        self.amp_env.setSustain(gui.amp_sustain.itemAt(1).widget().value())
-        self.amp_env.setRelease(gui.amp_release.itemAt(1).widget().value())
-        self.amp_env.play()
+        # Amplitude envelope if not bypassed
+        if not self.amp_bypass:
+            self.amp_env.setAttack(gui.amp_attack.itemAt(1).widget().value())
+            self.amp_env.setDecay(gui.amp_decay.itemAt(1).widget().value())
+            self.amp_env.setSustain(gui.amp_sustain.itemAt(1).widget().value())
+            self.amp_env.setRelease(gui.amp_release.itemAt(1).widget().value())
+            self.amp_env.play()
+        else:
+            # Constant amplitude when bypassed
+            self.amp_env.setAttack(0.01)
+            self.amp_env.setDecay(0.01)
+            self.amp_env.setSustain(1.0)
+            self.amp_env.setRelease(0.01)
+            self.amp_env.play()
 
-        # Delay update
-        self.left_delay.delay = self._get_delays(gui.left_delays)
-        self.right_delay.delay = self._get_delays(gui.right_delays)
-        self.left_delay.feedback = gui.left_feedback.itemAt(1).widget().value()
-        self.right_delay.feedback = gui.right_feedback.itemAt(1).widget().value()
+        # Delay update if not bypassed
+        if not self.delay_bypass:
+            self.left_delay.delay = self._get_delays(gui.left_delays)
+            self.right_delay.delay = self._get_delays(gui.right_delays)
+            self.left_delay.feedback = gui.left_feedback.itemAt(1).widget().value()
+            self.right_delay.feedback = gui.right_feedback.itemAt(1).widget().value()
+            
+            # Ensure delays are in the signal chain
+            self.left_delay_selector.voice = 1
+            self.right_delay_selector.voice = 1
+        else:
+            # When bypassed, use voice 0 which bypasses the delays
+            self.left_delay_selector.voice = 0
+            self.right_delay_selector.voice = 0
 
         self.current_note = note
     
@@ -316,6 +410,133 @@ class Oscillator:
         if self.osc_type == "operator" and self.initialized:
             return self.mod_output
         return None
+        
+    def set_bypass(self, section, state):
+        """Set bypass state for a specific section
+        
+        Args:
+            section (str): The section to bypass ('osc', 'freq', 'amp', 'filter', 'delay')
+            state (bool): True to bypass, False to enable
+        """
+        if not self.initialized:
+            return
+            
+        if section == 'filter' and self.filter_bypass != state:
+            self.filter_bypass = state
+            # Voice 0 bypasses the filter, voice 1 uses it
+            self.filter_selector.voice = 0 if state else 1
+            
+        elif section == 'delay' and self.delay_bypass != state:
+            self.delay_bypass = state
+            # Voice 0 bypasses the delay, voice 1 uses it
+            self.left_delay_selector.voice = 0 if state else 1
+            self.right_delay_selector.voice = 0 if state else 1
+            
+        elif section == 'osc':
+            self.osc_bypass = state
+            # Oscillator bypass is handled differently - we just mute it
+            if state:
+                self.osc.mul = 0  # Mute oscillator
+            # We don't unmute here as that's controlled by amp envelope
+            
+        elif section == 'freq':
+            self.freq_bypass = state
+            # When bypassing frequency processing, we hold at the base frequency
+            # Implementation will depend on what gui is active - handled in note_on
+            
+        elif section == 'amp':
+            self.amp_bypass = state
+            # When bypassing amplitude envelope, we use a constant gain of 1
+            if state:
+                self.amp_env.mul = 1
+                self.amp_ramp.mul = 1
+            # We don't reset here as that's handled in note_on
+            
+    def get_bypass_state(self, section):
+        """Get the bypass state for a specific section
+        
+        Args:
+            section (str): The section to check ('osc', 'freq', 'amp', 'filter', 'delay')
+            
+        Returns:
+            bool: True if bypassed, False if enabled
+        """
+        if section == 'osc':
+            return self.osc_bypass
+        elif section == 'freq':
+            return self.freq_bypass
+        elif section == 'amp':
+            return self.amp_bypass
+        elif section == 'filter':
+            return self.filter_bypass
+        elif section == 'delay':
+            return self.delay_bypass
+        return False
+        
+    def set_pan_position(self, position):
+        """Set the manual pan position
+        
+        Args:
+            position (float): Pan position from 0.0 (left) to 1.0 (right)
+        """
+        if not self.initialized:
+            return
+            
+        # Clamp to valid range
+        position = max(0.0, min(1.0, position))
+        
+        # Update the position signal
+        try:
+            self.pan_pos.setValue(position)
+        except AttributeError:
+            # Fallback to direct assignment
+            self.pan_pos.value = position
+        
+        # Ensure we're using manual panning
+        if self.use_autopan:
+            self.use_autopan = False
+            self.pan_selector.voice = 0
+            
+        # Calculate equal-power panning values
+        # This gives better volume balance across the stereo field
+        left_gain = (1.0 - position) ** 0.5
+        right_gain = position ** 0.5
+        
+        # Set the pan gains with smooth transitions
+        self.pan_left.setValue(left_gain)
+        self.pan_right.setValue(right_gain)
+            
+    def set_stereo_width(self, width):
+        """Set the stereo width
+        
+        Args:
+            width (float): Width from 0.0 (mono) to 1.0 (full stereo)
+        """
+        if not self.initialized:
+            return
+            
+        # Clamp to valid range
+        width = max(0.0, min(1.0, width))
+        self.stereo_width = width
+        self.width_processor.interp = width
+        
+    def set_autopan(self, enabled, rate=None):
+        """Enable or disable autopanning
+        
+        Args:
+            enabled (bool): True to enable autopanning, False to use manual pan
+            rate (float, optional): LFO frequency in Hz (if None, keep current)
+        """
+        if not self.initialized:
+            return
+            
+        # Set autopan state
+        self.use_autopan = enabled
+        self.pan_selector.voice = 1 if enabled else 0
+        
+        # Update LFO rate if provided
+        if rate is not None:
+            self.pan_lfo.freq = rate
     
     def shutdown(self):
         """Clean shutdown of audio components"""
@@ -329,8 +550,27 @@ class Oscillator:
         # Clear references to help with garbage collection
         self.stereo.stop()
         self.stereo = None
-        self.l_pan = None
-        self.r_pan = None
+        
+        # Clear panner components
+        self.width_processor = None
+        self.mono_mix = None
+        self.stereo_mix = None
+        self.l_out = None
+        self.r_out = None
+        self.pan_left = None
+        self.pan_right = None
+        self.mono_left = None
+        self.mono_right = None
+        self.pan_pos = None
+        self.pan_lfo = None
+        self.pan_selector = None
+        
+        # Clear selector components
+        self.left_delay_selector = None
+        self.right_delay_selector = None
+        self.filter_selector = None
+        
+        # Clear original components
         self.left_delay = None
         self.right_delay = None
         self.moog_filter = None

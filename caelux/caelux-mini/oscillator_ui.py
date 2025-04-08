@@ -1,11 +1,24 @@
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QDoubleSpinBox,
-    QGroupBox, QApplication, QComboBox, QScrollArea
+    QGroupBox, QApplication, QComboBox, QScrollArea, QCheckBox
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from wavetables import WaveformBank
 
 class OscillatorUI(QWidget):
+    # Define signals for bypass toggles
+    osc_bypass_toggled = pyqtSignal(bool)
+    freq_bypass_toggled = pyqtSignal(bool)
+    amp_bypass_toggled = pyqtSignal(bool)
+    filter_bypass_toggled = pyqtSignal(bool)
+    delay_bypass_toggled = pyqtSignal(bool)
+    
+    # Define signals for panner controls
+    pan_position_changed_signal = pyqtSignal(float)
+    stereo_width_changed_signal = pyqtSignal(float)
+    autopan_toggled_signal = pyqtSignal(bool)
+    autopan_rate_changed_signal = pyqtSignal(float)
+    
     def __init__(self, server=None, osc_name="C1", osc_type="carrier"):
         super().__init__()
         
@@ -13,6 +26,15 @@ class OscillatorUI(QWidget):
         self.server = server
         self.osc_name = osc_name
         self.osc_type = osc_type
+        
+        # Bypass state
+        self.bypass_state = {
+            'osc': False,
+            'freq': False,
+            'amp': False,
+            'filter': False,
+            'delay': False
+        }
         
         # Initialize the wavetable manager 
         self.wave_bank = WaveformBank(server)
@@ -51,6 +73,7 @@ class OscillatorUI(QWidget):
         
         main_layout.addWidget(filter_feedback_panel)
         main_layout.addWidget(self._make_delay_panel())
+        main_layout.addWidget(self._make_panner_panel())
         
         # Set up the scroll area with our content
         scroll_area.setWidget(scroll_widget)
@@ -67,6 +90,15 @@ class OscillatorUI(QWidget):
         """Create controls for oscillator bank parameters"""
         box = QGroupBox("Oscillator")
         vbox = QVBoxLayout()
+        
+        # Add bypass checkbox
+        bypass_layout = QHBoxLayout()
+        self.osc_bypass_checkbox = QCheckBox("Bypass Oscillator")
+        self.osc_bypass_checkbox.setChecked(self.bypass_state['osc'])
+        self.osc_bypass_checkbox.stateChanged.connect(self._on_osc_bypass_changed)
+        bypass_layout.addWidget(self.osc_bypass_checkbox)
+        bypass_layout.addStretch()
+        vbox.addLayout(bypass_layout)
         
         # Waveform selection
         wave_layout = QHBoxLayout()
@@ -129,6 +161,15 @@ class OscillatorUI(QWidget):
     def _make_freq_panel(self):
         box = QGroupBox("Frequency Controls")
         vbox = QVBoxLayout()
+
+        # Add bypass checkbox
+        bypass_layout = QHBoxLayout()
+        self.freq_bypass_checkbox = QCheckBox("Bypass Frequency Processing")
+        self.freq_bypass_checkbox.setChecked(self.bypass_state['freq'])
+        self.freq_bypass_checkbox.stateChanged.connect(self._on_freq_bypass_changed)
+        bypass_layout.addWidget(self.freq_bypass_checkbox)
+        bypass_layout.addStretch()
+        vbox.addLayout(bypass_layout)
 
         # For Carrier, add a dedicated modulation controls section at the top
         if self.osc_type == "carrier":
@@ -207,6 +248,15 @@ class OscillatorUI(QWidget):
         box = QGroupBox("Amplitude Controls")
         vbox = QVBoxLayout()
 
+        # Add bypass checkbox
+        bypass_layout = QHBoxLayout()
+        self.amp_bypass_checkbox = QCheckBox("Bypass Amplitude Processing")
+        self.amp_bypass_checkbox.setChecked(self.bypass_state['amp'])
+        self.amp_bypass_checkbox.stateChanged.connect(self._on_amp_bypass_changed)
+        bypass_layout.addWidget(self.amp_bypass_checkbox)
+        bypass_layout.addStretch()
+        vbox.addLayout(bypass_layout)
+
         # Create amplitude ramp controls - in consistent order
         self.amp_ramp_delay = self._make_slider("Amp Ramp Delay (sec)", 0.0, 10.0, 0.0)
         self.amp_ramp_time = self._make_slider("Amp Ramp Time (sec)", 0.001, 10, 1.0)
@@ -235,6 +285,15 @@ class OscillatorUI(QWidget):
     def _make_filter_panel(self):
         box = QGroupBox("LPF")
         vbox = QVBoxLayout()
+        
+        # Add bypass checkbox
+        bypass_layout = QHBoxLayout()
+        self.filter_bypass_checkbox = QCheckBox("Bypass Filter")
+        self.filter_bypass_checkbox.setChecked(self.bypass_state['filter'])
+        self.filter_bypass_checkbox.stateChanged.connect(self._on_filter_bypass_changed)
+        bypass_layout.addWidget(self.filter_bypass_checkbox)
+        bypass_layout.addStretch()
+        vbox.addLayout(bypass_layout)
     
         # Resonance control
         self.filter_res = self._make_slider("Filter Resonance", 0.0, 0.99, 0.3)
@@ -276,6 +335,15 @@ class OscillatorUI(QWidget):
     def _make_delay_panel(self):
         box = QGroupBox("Delay Controls")
         vbox = QVBoxLayout()
+        
+        # Add bypass checkbox
+        bypass_layout = QHBoxLayout()
+        self.delay_bypass_checkbox = QCheckBox("Bypass Delay")
+        self.delay_bypass_checkbox.setChecked(self.bypass_state['delay'])
+        self.delay_bypass_checkbox.stateChanged.connect(self._on_delay_bypass_changed)
+        bypass_layout.addWidget(self.delay_bypass_checkbox)
+        bypass_layout.addStretch()
+        vbox.addLayout(bypass_layout)
 
         self.left_delays = [
             self._make_slider("Left Tap 1 (s)", 0.01, 2.0, 0.15),
@@ -297,3 +365,106 @@ class OscillatorUI(QWidget):
 
         box.setLayout(vbox)
         return box
+        
+    def _make_panner_panel(self):
+        """Create controls for the stereo panner"""
+        box = QGroupBox("Stereo Panner")
+        vbox = QVBoxLayout()
+        
+        # Pan position slider
+        self.pan_position = self._make_slider("Pan Position", 0.0, 1.0, 0.5, 0.01)
+        vbox.addLayout(self.pan_position)
+        
+        # Stereo width slider
+        self.stereo_width = self._make_slider("Stereo Width", 0.0, 1.0, 1.0, 0.01)
+        vbox.addLayout(self.stereo_width)
+        
+        # Autopan controls
+        autopan_layout = QHBoxLayout()
+        self.autopan_checkbox = QCheckBox("Enable Autopan")
+        autopan_layout.addWidget(self.autopan_checkbox)
+        autopan_layout.addStretch()
+        vbox.addLayout(autopan_layout)
+        
+        # Autopan rate (LFO frequency)
+        self.autopan_rate = self._make_slider("Autopan Rate (Hz)", 0.01, 10.0, 0.2, 0.01)
+        vbox.addLayout(self.autopan_rate)
+        
+        # Add signals
+        self.pan_position.itemAt(1).widget().valueChanged.connect(self._on_pan_position_changed)
+        self.stereo_width.itemAt(1).widget().valueChanged.connect(self._on_stereo_width_changed)
+        self.autopan_checkbox.stateChanged.connect(self._on_autopan_toggled)
+        self.autopan_rate.itemAt(1).widget().valueChanged.connect(self._on_autopan_rate_changed)
+        
+        box.setLayout(vbox)
+        return box
+    
+    # Event handlers for bypass checkboxes
+    def _on_osc_bypass_changed(self, state):
+        """Handle oscillator bypass checkbox changes"""
+        bypass = state == Qt.Checked
+        self.bypass_state['osc'] = bypass
+        self.osc_bypass_toggled.emit(bypass)
+        
+    def _on_freq_bypass_changed(self, state):
+        """Handle frequency bypass checkbox changes"""
+        bypass = state == Qt.Checked
+        self.bypass_state['freq'] = bypass
+        self.freq_bypass_toggled.emit(bypass)
+        
+    def _on_amp_bypass_changed(self, state):
+        """Handle amplitude bypass checkbox changes"""
+        bypass = state == Qt.Checked
+        self.bypass_state['amp'] = bypass
+        self.amp_bypass_toggled.emit(bypass)
+        
+    def _on_filter_bypass_changed(self, state):
+        """Handle filter bypass checkbox changes"""
+        bypass = state == Qt.Checked
+        self.bypass_state['filter'] = bypass
+        self.filter_bypass_toggled.emit(bypass)
+        
+    def _on_delay_bypass_changed(self, state):
+        """Handle delay bypass checkbox changes"""
+        bypass = state == Qt.Checked
+        self.bypass_state['delay'] = bypass
+        self.delay_bypass_toggled.emit(bypass)
+        
+    def set_bypass_state(self, section, state):
+        """Set the bypass state for a section
+        
+        Args:
+            section (str): The section to modify ('osc', 'freq', 'amp', 'filter', 'delay')
+            state (bool): True to bypass, False to enable
+        """
+        self.bypass_state[section] = state
+        
+        # Update the corresponding checkbox
+        if section == 'osc':
+            self.osc_bypass_checkbox.setChecked(state)
+        elif section == 'freq':
+            self.freq_bypass_checkbox.setChecked(state)
+        elif section == 'amp':
+            self.amp_bypass_checkbox.setChecked(state)
+        elif section == 'filter':
+            self.filter_bypass_checkbox.setChecked(state)
+        elif section == 'delay':
+            self.delay_bypass_checkbox.setChecked(state)
+            
+    # Event handlers for panner controls
+    def _on_pan_position_changed(self, value):
+        """Handle pan position changes"""
+        self.pan_position_changed_signal.emit(value)
+        
+    def _on_stereo_width_changed(self, value):
+        """Handle stereo width changes"""
+        self.stereo_width_changed_signal.emit(value)
+        
+    def _on_autopan_toggled(self, state):
+        """Handle autopan toggle"""
+        enabled = state == Qt.Checked
+        self.autopan_toggled_signal.emit(enabled)
+        
+    def _on_autopan_rate_changed(self, value):
+        """Handle autopan rate changes"""
+        self.autopan_rate_changed_signal.emit(value)
