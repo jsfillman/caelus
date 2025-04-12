@@ -1,0 +1,105 @@
+{
+	"name": "caelux_osc",
+	"filename": "caelux_osc.dsp",
+	"version": "2.79.3",
+	"compile_options": "-a /usr/local/Cellar/faust/2.79.3_1/share/faust/ca-qt.cpp -lang cpp -i -ct 1 -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0",
+	"library_list": ["/usr/local/Cellar/faust/2.79.3_1/share/faust/stdfaust.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/basics.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/oscillators.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/maths.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/platform.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/filters.lib","/usr/local/Cellar/faust/2.79.3_1/share/faust/envelopes.lib"],
+	"include_pathnames": ["/usr/local/Cellar/faust/2.79.3_1/share/faust","/usr/local/share/faust","/usr/share/faust",".","/Users/simian/Documents/repos/jsfillman/caelus/caelux/caelux-mini/caelux_mini_faust/."],
+	"size": 16516,
+	"inputs": 0,
+	"outputs": 2,
+	"meta": [ 
+		{ "basics.lib/name": "Faust Basic Element Library" },
+		{ "basics.lib/version": "1.21.0" },
+		{ "compile_options": "-a /usr/local/Cellar/faust/2.79.3_1/share/faust/ca-qt.cpp -lang cpp -i -ct 1 -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0" },
+		{ "envelopes.lib/adsr:author": "Yann Orlarey and Andrey Bundin" },
+		{ "envelopes.lib/author": "GRAME" },
+		{ "envelopes.lib/copyright": "GRAME" },
+		{ "envelopes.lib/license": "LGPL with exception" },
+		{ "envelopes.lib/name": "Faust Envelope Library" },
+		{ "envelopes.lib/version": "1.3.0" },
+		{ "filename": "caelux_osc.dsp" },
+		{ "filters.lib/lowpass0_highpass1": "MIT-style STK-4.3 license" },
+		{ "filters.lib/name": "Faust Filters Library" },
+		{ "filters.lib/pole:author": "Julius O. Smith III" },
+		{ "filters.lib/pole:copyright": "Copyright (C) 2003-2019 by Julius O. Smith III <jos@ccrma.stanford.edu>" },
+		{ "filters.lib/pole:license": "MIT-style STK-4.3 license" },
+		{ "filters.lib/version": "1.7.1" },
+		{ "maths.lib/author": "GRAME" },
+		{ "maths.lib/copyright": "GRAME" },
+		{ "maths.lib/license": "LGPL with exception" },
+		{ "maths.lib/name": "Faust Math Library" },
+		{ "maths.lib/version": "2.8.1" },
+		{ "name": "caelux_osc" },
+		{ "oscillators.lib/lf_sawpos:author": "Bart Brouns, revised by Stéphane Letz" },
+		{ "oscillators.lib/lf_sawpos:licence": "STK-4.3" },
+		{ "oscillators.lib/name": "Faust Oscillator Library" },
+		{ "oscillators.lib/saw2ptr:author": "Julius O. Smith III" },
+		{ "oscillators.lib/saw2ptr:license": "STK-4.3" },
+		{ "oscillators.lib/sawN:author": "Julius O. Smith III" },
+		{ "oscillators.lib/sawN:license": "STK-4.3" },
+		{ "oscillators.lib/version": "1.6.0" },
+		{ "platform.lib/name": "Generic Platform Library" },
+		{ "platform.lib/version": "1.3.0" }
+	],
+	"ui": [ 
+		{
+			"type": "vgroup",
+			"label": "caelux_osc",
+			"items": [ 
+				{
+					"type": "nentry",
+					"label": "freq",
+					"varname": "fEntry1",
+					"shortname": "freq",
+					"address": "/caelux_osc/freq",
+					"meta": [
+						{ "midi": "pitchwheel" }
+					],
+					"init": 440,
+					"min": 20,
+					"max": 20000,
+					"step": 1
+				},
+				{
+					"type": "nentry",
+					"label": "gain",
+					"varname": "fEntry0",
+					"shortname": "gain",
+					"address": "/caelux_osc/gain",
+					"meta": [
+						{ "midi": "ctrl 7" }
+					],
+					"init": 0.5,
+					"min": 0,
+					"max": 1,
+					"step": 0.01
+				},
+				{
+					"type": "button",
+					"label": "gate",
+					"varname": "fButton0",
+					"shortname": "gate",
+					"address": "/caelux_osc/gate",
+					"meta": [
+						{ "midi": "key" }
+					]
+				},
+				{
+					"type": "hslider",
+					"label": "wave_type",
+					"varname": "fHslider0",
+					"shortname": "wave_type",
+					"address": "/caelux_osc/wave_type",
+					"meta": [
+						{ "style": "menu{'sine':0;'saw':1;'square':2;'triangle':3}" }
+					],
+					"init": 0,
+					"min": 0,
+					"max": 3,
+					"step": 1
+				}
+			]
+		}
+	]
+}

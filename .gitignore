@@ -1,0 +1,36 @@
+# === macOS System Files ===
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Trashes
+.Spotlight-V100
+.fseventsd
+.com.apple.timemachine.donotpresent
+.com.apple.mobile.*
+VolumeIcon.icns
+.TemporaryItems
+.apdisk
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# === Python Virtual Environments ===
+venv/
+.venv/
+env/
+.env/
+
+# === Misc ===
+*.log
+*.sqlite3
+*.db
+*.egg-info/
+dist/
+build/
+

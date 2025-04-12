@@ -1,0 +1,5 @@
+buffer_size: 256
+device_index: 5
+device_name: Loopback Audio 2
+num_channels: 4
+sample_rate: 44100
