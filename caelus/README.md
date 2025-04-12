@@ -1,5 +1,7 @@
 # Caelus
 
+![Caelus](Caelus-Transparent.png)
+
 Caelus is an advanced, modular FM synthesis engine built with Python and the `pyo` audio processing library. It provides a flexible, high-quality framework for creating complex FM sounds with extensive modulation capabilities.
 
 ## Overview

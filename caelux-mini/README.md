@@ -1,5 +1,7 @@
 # Caelux Mini Synthesizer
 
+![Caelux Mini](Caelux-mini.png)
+
 Caelux Mini is an advanced FM synthesis engine implemented in Python, designed for creating complex, evolving sounds through a hierarchical oscillator architecture.
 
 ## Overview
