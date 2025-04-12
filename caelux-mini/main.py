@@ -4,6 +4,7 @@ import random
 import atexit
 import sys
 import time
+import yaml
 
 from PyQt5.QtWidgets import (
     QApplication, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -21,17 +22,44 @@ from midi_handler import MidiHandler
 import os
 PATCH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_patch.yaml")
 
+# Simple audio setup functions copied from Octolux
+def select_audio_device():
+    print("=== AUDIO DEVICES ===")
+    pyo.pa_list_devices()
+    return int(input("Select audio output device index: "))
+
+def select_num_channels():
+    return int(input("Number of audio output channels (e.g. 2): "))
+
+def select_midi_device():
+    print("\n=== MIDI INPUT DEVICES ===")
+    inputs = mido.get_input_names()
+    for i, name in enumerate(inputs):
+        print(f"{i}: {name}")
+    index = int(input("Select MIDI input port index: "))
+    return inputs[index]
+
+def start_server(audio_index, nchnls=2):
+    # Simplified server startup like Octolux
+    s = pyo.Server(nchnls=nchnls)
+    s.setOutputDevice(audio_index)
+    s.boot()
+    s.start()
+    return s
+
 class MainWindow(QWidget):
-    def __init__(self):
+    def __init__(self, server, midi_port=None):
         super().__init__()
         self.setWindowTitle("Caelux Mini")
         
-        # Initialize audio server first
-        self.server = None
-        self.particle = None  # Initialize to None
-        self.init_audio_server()
+        # Store the server reference and ensure it's running
+        self.server = server
+        if self.server and not self.server.getIsStarted():
+            print("Starting audio server from MainWindow init")
+            self.server.start()
         
-        # Only create particle if server was successfully created and started
+        # Initialize particle
+        self.particle = None
         if self.server and hasattr(self.server, 'getIsStarted') and self.server.getIsStarted():
             print("Audio server initialized and started - creating particle")
             try:
@@ -47,6 +75,12 @@ class MainWindow(QWidget):
         
         # Initialize the MIDI handler
         self.midi_handler = MidiHandler()
+        
+        # Let the GUI handle MIDI selection - don't connect to port here
+        # If a port was provided, we'll connect to it, but normally we'll use the GUI selection
+        if midi_port:
+            print(f"Connecting to provided MIDI port: {midi_port}")
+            self.midi_handler.open_port(midi_port)
         
         # Connect MIDI signals to particle
         self.connect_midi_to_particle()
@@ -125,45 +159,56 @@ class MainWindow(QWidget):
         if not hasattr(self, 'midi_handler'):
             print("No MIDI handler available")
             return
-            
-        if not hasattr(self, 'particle') or not self.particle or not hasattr(self.particle, 'initialized') or not self.particle.initialized:
-            print("Particle not initialized, cannot connect MIDI signals")
-            # At least connect the note on signal to our handler (which has error checking)
-            try:
-                # Disconnect first to avoid duplicate connections
-                try:
-                    self.midi_handler.note_on_signal.disconnect(self.handle_note_on)
-                except:
-                    pass
-                # Connect
-                self.midi_handler.note_on_signal.connect(self.handle_note_on)
-            except Exception as e:
-                print(f"Error connecting MIDI note on signal: {e}")
-            return
         
+        print("\n=== CONNECTING MIDI SIGNALS ===")
+        
+        # ALWAYS connect note on/off to our handler methods first
         try:
-            # Connect note signals
-            # Disconnect first to avoid duplicate connections
+            # Reset all connections first
             try:
-                self.midi_handler.note_on_signal.disconnect(self.handle_note_on)
-            except:
-                pass
-            self.midi_handler.note_on_signal.connect(self.handle_note_on)
-            
-            try:
+                self.midi_handler.note_on_signal.disconnect()
                 self.midi_handler.note_off_signal.disconnect()
-            except:
-                pass
-            self.midi_handler.note_off_signal.connect(self.particle.note_off)
-            
-            # Connect other MIDI signals as needed
-            try:
                 self.midi_handler.pitch_bend_signal.disconnect()
+                print("Disconnected existing MIDI signals")
             except:
                 pass
-            self.midi_handler.pitch_bend_signal.connect(self.particle.pitch_bend)
             
+            # Connect to our local handlers (these will generate console output)
+            self.midi_handler.note_on_signal.connect(self.handle_note_on)
+            print("Connected MIDI note ON signal to handler")
+            
+            # Create a basic note_off handler
+            def handle_note_off(note):
+                note_name = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][note % 12]
+                octave = note // 12 - 1
+                print(f"🎹 MIDI NOTE OFF: {note_name}{octave} (note={note})")
+                
+                # Try to propagate to particle
+                if hasattr(self, 'particle') and self.particle and hasattr(self.particle, 'note_off'):
+                    try:
+                        self.particle.note_off(note)
+                        print(f"Note-off successfully triggered for {note_name}{octave}")
+                    except Exception as e:
+                        print(f"Error in particle.note_off: {e}")
+            
+            self.midi_handler.note_off_signal.connect(handle_note_off)
+            print("Connected MIDI note OFF signal to handler")
+            
+            # If particle is initialized, also connect pitch bend
+            if hasattr(self, 'particle') and self.particle and hasattr(self.particle, 'initialized') and self.particle.initialized:
+                def handle_pitch_bend(value):
+                    print(f"MIDI Pitch Bend: {value:.2f}")
+                    if hasattr(self.particle, 'pitch_bend'):
+                        try:
+                            self.particle.pitch_bend(value)
+                        except Exception as e:
+                            print(f"Error in particle.pitch_bend: {e}")
+                
+                self.midi_handler.pitch_bend_signal.connect(handle_pitch_bend)
+                print("Connected MIDI pitch bend signal to handler")
+                
             print("MIDI signals connected successfully")
+            
         except Exception as e:
             print(f"Error connecting MIDI signals: {e}")
         
@@ -317,444 +362,170 @@ class MainWindow(QWidget):
     
     def handle_note_on(self, note, velocity):
         """Handle note on by passing parameters from UI"""
-        # Print for debugging
-        print(f"MIDI Note ON received: note={note}, velocity={velocity}")
+        # Create highly visible console output for MIDI note event
+        note_name = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][note % 12]
+        octave = note // 12 - 1
+        print("\n" + "="*50)
+        print(f"🎹 MIDI NOTE ON: {note_name}{octave} (note={note}, velocity={velocity})")
+        print("="*50 + "\n")
+        
+        # Always create a direct test tone for audible feedback
+        try:
+            freq = pyo.midiToHz(note)
+            
+            # Create a simple tone that bypasses all complex routing
+            print(f"Playing direct test tone at {freq:.1f}Hz")
+            test_tone = pyo.Sine(freq=freq, mul=velocity/127.0 * 0.5).out()
+            
+            # Auto-release after 1 second
+            def release_tone():
+                if hasattr(test_tone, 'stop'):
+                    test_tone.stop()
+                    print(f"Stopped test tone for note {note_name}{octave}")
+            
+            release_timer = QTimer()
+            release_timer.setSingleShot(True)
+            release_timer.timeout.connect(release_tone)
+            release_timer.start(1000)  # 1 second note
+        except Exception as e:
+            print(f"Error creating direct test tone: {e}")
         
         # Check if particle exists and is initialized
         if not hasattr(self, 'particle') or not self.particle or not hasattr(self.particle, 'note_on'):
-            print("Cannot trigger note: particle not initialized")
+            print("Cannot trigger note in particle: particle not initialized")
             return
             
         # Create a dictionary of UI references for each oscillator
         ui_dict = {
-            "OP1": self.op1_ui,
-            "CAR1": self.car1_ui,
-            "CAR2": self.car2_ui
+            "OP1": self.op1_ui if hasattr(self, 'op1_ui') else None,
+            "CAR1": self.car1_ui if hasattr(self, 'car1_ui') else None,
+            "CAR2": self.car2_ui if hasattr(self, 'car2_ui') else None
         }
         
+        # Try to trigger the normal synth engine
         try:
+            # Double-check the server is running
+            if self.server and not self.server.getIsStarted():
+                print("Restarting audio server before triggering note")
+                self.server.start()
+            
             # Trigger note-on on the particle with UI references
+            print(f"Triggering particle.note_on with note={note_name}{octave}")
             self.particle.note_on(note, velocity, ui_dict)
+            print("Note successfully triggered on particle engine")
         except Exception as e:
-            print(f"Error triggering note: {e}")
-            # Try to recover by recreating the particle
-            try:
-                if self.server and self.server.getIsStarted():
-                    print("Attempting to recover by reinitializing particle...")
-                    self.particle = Particle(self.server)
-                    self.connect_bypass_signals()
-            except:
-                print("Could not recover particle after error")
+            print(f"Error triggering note on particle: {e}")
     
     def init_audio_server(self):
-        """Initialize audio server with default settings"""
+        """Initialize audio server with default settings - simplified version"""
         try:
-            # Get available audio devices first
-            device_info = {}  # Will hold device info if discovered
-            default_device = 0  # Default fallback
+            print("\nINITIALIZING AUDIO SERVER:")
             
-            # Try multiple methods to get audio device info
-            print("\nDISCOVERING AUDIO DEVICES:")
+            # Check for saved audio settings file
+            settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio_settings.yaml")
+            saved_device = None
+            nchnls = 2  # Default
             
-            # Method 1: Try pa_get_output_devices (newer API with different formats)
-            try:
-                print("Method 1: Using pa_get_output_devices():")
-                raw_info = pyo.pa_get_output_devices()
-                print(f"Raw output device info: {raw_info}")
-                
-                # Handle different return formats
-                if isinstance(raw_info, dict):
-                    # Case 1: Dictionary format
-                    device_info = raw_info
-                    print("  Dictionary format detected")
-                    for idx, name in device_info.items():
-                        print(f"  {idx}: {name}")
-                        
-                    # Look for multichannel device
-                    for idx, name in device_info.items():
-                        if isinstance(name, str) and any(term in name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-                            print(f"Found likely multichannel device: {name} (index {idx})")
-                            default_device = idx
-                            break
-                            
-                elif isinstance(raw_info, tuple) or isinstance(raw_info, list):
-                    # Case 2: Tuple or list format
-                    print("  List/Tuple format detected")
-                    device_info = {}
-                    
-                    # Check if this is the specific format: ([names], [indices])
-                    if len(raw_info) == 2 and isinstance(raw_info[0], list) and isinstance(raw_info[1], list):
-                        print("  Detected specific format: ([names], [indices])")
-                        names = raw_info[0]
-                        indices = raw_info[1]
-                        
-                        # Map each name to its corresponding index
-                        for i in range(len(names)):
-                            if i < len(indices):
-                                idx = indices[i]
-                                name = names[i]
-                                device_info[idx] = name
-                                print(f"  {idx}: {name}")
-                                
-                                # Check for multichannel
-                                if isinstance(name, str) and any(term in name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-                                    print(f"Found likely multichannel device: {name} (index {idx})")
-                                    default_device = idx
-                    else:
-                        # Standard list/tuple processing
-                        for i, name in enumerate(raw_info):
-                            if name:  # Skip empty entries
-                                device_info[i] = name
-                                print(f"  {i}: {name}")
-                                
-                                # Check for multichannel
-                                if isinstance(name, str) and any(term in name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-                                    print(f"Found likely multichannel device: {name} (index {i})")
-                                    default_device = i
-                                    
-                # After detecting, try to check if the found device is valid
-                print(f"Checking if device {default_device} is valid...")
-                
-                # Create a test server to check device validity
+            if os.path.exists(settings_file):
                 try:
-                    print("Creating test server to verify device")
-                    test_server = None
-                    try:
-                        # Try creating with no device parameter
-                        test_server = pyo.Server()
-                        print("Created test server")
-                        
-                        # Try setting device
-                        try:
-                            test_server.setOutputDevice(default_device)
-                            print(f"Device {default_device} appears valid")
-                        except Exception as e:
-                            print(f"Device {default_device} not valid: {e}")
-                            default_device = 0  # Fall back to default device
-                    except:
-                        print("Could not create test server")
-                        
-                    # Clean up test server
-                    if test_server is not None:
-                        del test_server
+                    with open(settings_file, 'r') as f:
+                        settings = yaml.safe_load(f)
+                        if settings and 'device_index' in settings:
+                            saved_device = settings['device_index']
+                            nchnls = settings.get('num_channels', 2)
+                            print(f"Found saved audio settings: device={saved_device}, channels={nchnls}")
                 except Exception as e:
-                    print(f"Error testing device: {e}")
-                    
-                # Additional formats could be handled here
-                else:
-                    print(f"  Unknown format: {type(raw_info)}")
-                    # Try to extract something useful anyway
-                    try:
-                        device_info = {}
-                        if hasattr(raw_info, "__iter__"):
-                            for i, item in enumerate(raw_info):
-                                device_info[i] = str(item)
-                                print(f"  {i}: {item}")
-                    except:
-                        print("  Couldn't interpret data format")
-            except Exception as e:
-                print(f"Method 1 (pa_get_output_devices) failed: {e}")
-                
-            # Method 2: If that failed, try pa_get_devices_infos (older API)
-            if not device_info:
+                    print(f"Error loading saved audio settings: {e}")
+            
+            # Simple server creation
+            print("Creating audio server...")
+            self.server = pyo.Server(nchnls=nchnls)
+            print(f"Created server with {nchnls} channels")
+            
+            # Boot the server
+            print("Booting the server...")
+            self.server.boot()
+            print("Server booted successfully")
+            
+            # Set device if we found saved settings
+            if saved_device is not None:
+                print(f"Setting output device to saved setting: {saved_device}")
                 try:
-                    print("Method 2: Using pa_get_devices_infos:")
-                    audio_info = pyo.pa_get_devices_infos()
-                    for i, dev in enumerate(audio_info):
-                        try:
-                            if isinstance(dev, dict) and 'name' in dev:
-                                name = dev['name']
-                                device_info[i] = name
-                                print(f"  {i}: {name}")
-                                # Check for multichannel
-                                if any(term in name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-                                    print(f"Found likely multichannel device: {name} (index {i})")
-                                    default_device = i
-                            # Older method for nested dicts
-                            else:
-                                for key, value in dev.items():
-                                    if isinstance(value, dict) and 'name' in value:
-                                        name = value['name']
-                                        idx = int(key) if key.isdigit() else i
-                                        device_info[idx] = name
-                                        print(f"  {idx}: {name}")
-                                        # Check for multichannel
-                                        if any(term in name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-                                            print(f"Found likely multichannel device: {name} (index {idx})")
-                                            default_device = idx
-                        except:
-                            pass
+                    # Try to set the device before starting
+                    if hasattr(self.server, 'setOutputDevice'):
+                        self.server.setOutputDevice(saved_device)
+                        print(f"Successfully set output device to {saved_device}")
                 except Exception as e:
-                    print(f"Method 2 (pa_get_devices_infos) failed: {e}")
-                    
-            # Get device name if available
-            device_name = device_info.get(default_device, f"Device {default_device}")
-            print(f"Selected default device: {default_device} ({device_name})")
+                    print(f"Could not set saved device: {e}")
             
-            # Determine if multichannel
-            nchnls = 4 if device_info and any(term in device_info.get(default_device, "").lower() 
-                        for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]) else 2
-            
-            # Initialize server with explicit device selection
-            print(f"Creating initial server with device {default_device} ({device_name}) and {nchnls} channels")
-            
-            print(f"Creating server with simplified params...")
-            # Create the server with minimal parameters - some versions of pyo have different parameter names
-            try:
-                # Try the most standard approach
-                self.server = pyo.Server(nchnls=nchnls)
-                print("Created server with nchnls parameter")
-            except Exception as e:
-                print(f"Failed with standard params: {e}")
-                # Fall back to defaults
-                self.server = pyo.Server()
-                print("Created server with default parameters")
-                
-            # Boot the server first before setting device
-            try:
-                print("Booting the server...")
-                self.server.boot()
-                print("Server booted successfully")
-            except Exception as e:
-                print(f"Error booting server: {e}")
-                
-            # Try to set device after creation
-            print(f"Setting output device to {default_device} after creation")
-            try:
-                self.server.setOutputDevice(default_device)  # Try to set device after server creation
-                print(f"Successfully set output device to {default_device}")
-            except Exception as e:
-                print(f"Could not set output device: {e}")
-                
             # Start the server
-            try:
-                print("Starting the server...")
-                self.server.start()
-                print("Server started successfully")
-            except Exception as e:
-                print(f"Error starting server: {e}")
-                
-        except Exception as e:
-            print(f"Could not get audio device info: {e}, using default settings")
+            print("Starting the server...")
+            self.server.start()
+            print("Audio server started successfully")
             
-            try:
-                # Fall back to default with minimal parameters
-                print("Creating server with default parameters...")
-                self.server = pyo.Server(nchnls=2, buffersize=256, sr=44100)
-                
-                # Try to boot and start the server
-                print("Booting audio server...")
-                self.server.boot()
-                print("Starting audio server...")
-                self.server.start()
-                print("Server started with default settings")
-            except Exception as e:
-                print(f"Fatal error creating default server: {e}")
-            
-            # Print current audio settings for debugging
-            print(f"Audio initialized - SR: {self.server.getSamplingRate()}, BS: {self.server.getBufferSize()}")
-            
-            # Get and print the actual device that was used
-            try:
-                actual_device = self.server.getOutputDevice()
-                device_info = pyo.pa_get_output_devices()
-                device_name = device_info.get(actual_device, "Unknown")
-                print(f"Actual output device: {device_name} (index: {actual_device})")
-            except Exception as e:
-                print(f"Could not get output device info: {e}")
-                
             # Print audio server status
             print(f"Audio server is running: {self.server.getIsStarted()}")
-            print(f"Audio server number of channels: {self.server.getNchnls()}")
+            
+            # Get channel count safely 
+            try:
+                num_channels = self.server.getNchnls()
+                print(f"Audio server number of channels: {num_channels}")
+            except:
+                num_channels = nchnls
+                print(f"Using default channel count: {num_channels}")
                 
             # Test each channel
             print("Testing initial audio setup:")
-            self.test_audio_channels(self.server.getNchnls())
+            self.test_audio_channels(num_channels)
                 
         except Exception as e:
+            print(f"Error initializing audio server: {e}")
             QMessageBox.warning(self, "Audio Error", 
                 f"Could not start audio server: {e}\n\nThe synthesizer will not produce sound.")
             self.server = None
     
     def create_global_tab(self):
-        """Create the Global settings tab with audio and MIDI selections"""
+        """Create the Global settings tab with MIDI selection only"""
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Audio Output Selection
+        # Audio Output notification - informational only
         audio_group = QGroupBox("Audio Output")
         audio_layout = QVBoxLayout()
         
-        self.audio_devices_label = QLabel("Audio Output Device:")
-        self.audio_devices = QComboBox()
-        
-        # Add status label for current audio device
-        self.audio_device_status = QLabel("")
-        self.audio_device_status.setStyleSheet("color: #666; font-style: italic;")
-        
-        # Get available audio outputs from pyo
-        if self.server:
+        # Simple informational label with safely accessed properties
+        try:
+            sample_rate = self.server.getSamplingRate() if self.server else 'unknown'
+            channels = self.server.getNchnls() if self.server else 'unknown'
+            
+            # Different pyo versions have different ways to get the current device
+            device = 'unknown'
             try:
-                # Different methods to get device info depending on pyo version
-                print("Trying multiple methods to get audio devices...")
+                # Try modern API
+                device = self.server.getOutputDevice() if self.server else 'unknown'
+            except AttributeError:
+                # Fallback - just use the startup-selected device
+                device = "selected at startup"
                 
-                # Clear any existing devices
-                self.audio_devices.clear()
-                
-                # Track which item should be selected (the current device)
-                current_device = None
-                try:
-                    current_device = self.server.getOutputDevice()
-                except:
-                    pass
-                current_idx = 0
-                
-                # Method 1: Try pa_get_output_devices (newer API with different formats)
-                try:
-                    print("Method 1: Using pa_get_output_devices():")
-                    raw_info = pyo.pa_get_output_devices()
-                    print(f"Raw output device info: {raw_info}")
-                    
-                    # Handle different return formats
-                    if isinstance(raw_info, dict):
-                        # Case 1: Dictionary format
-                        print("  Dictionary format detected")
-                        for idx, name in sorted(raw_info.items()):
-                            print(f"  Adding device {idx}: {name}")
-                            self.audio_devices.addItem(str(name), idx)
-                            if idx == current_device:
-                                current_idx = self.audio_devices.count() - 1
-                                
-                    elif isinstance(raw_info, tuple) or isinstance(raw_info, list):
-                        # Case 2: Tuple or list format
-                        print("  List/Tuple format detected")
-                        
-                        # Check if this is the specific format: ([names], [indices])
-                        if len(raw_info) == 2 and isinstance(raw_info[0], list) and isinstance(raw_info[1], list):
-                            print("  Detected specific format: ([names], [indices])")
-                            names = raw_info[0]
-                            indices = raw_info[1]
-                            
-                            # Add each device with its proper index
-                            for i in range(len(names)):
-                                if i < len(indices):
-                                    idx = indices[i]
-                                    name = names[i]
-                                    print(f"  Adding device {idx}: {name}")
-                                    self.audio_devices.addItem(str(name), idx)
-                                    if idx == current_device:
-                                        current_idx = self.audio_devices.count() - 1
-                        else:
-                            # Standard list format
-                            for i, name in enumerate(raw_info):
-                                if name:  # Skip empty entries
-                                    print(f"  Adding device {i}: {name}")
-                                    self.audio_devices.addItem(str(name), i)
-                                    if i == current_device:
-                                        current_idx = self.audio_devices.count() - 1
-                        
-                    # Additional formats could be handled here
-                    else:
-                        print(f"  Unknown format: {type(raw_info)}")
-                        raise ValueError("Unhandled format")
-                        
-                except Exception as e:
-                    print(f"Method 1 failed: {e}")
-                
-                # Method 2: If that failed, try pa_get_devices_infos()
-                if self.audio_devices.count() == 0:
-                    try:
-                        print("Method 2: Using pa_get_devices_infos():")
-                        audio_info = pyo.pa_get_devices_infos()
-                        for i, dev in enumerate(audio_info):
-                            try:
-                                if isinstance(dev, dict) and 'name' in dev:
-                                    name = dev['name']
-                                    print(f"  Adding device {i}: {name}")
-                                    self.audio_devices.addItem(name, i)
-                                    if i == current_device:
-                                        current_idx = self.audio_devices.count() - 1
-                                else:
-                                    # Look for devices with 'latency' key in nested dicts
-                                    for key, value in dev.items():
-                                        if isinstance(value, dict) and 'name' in value:
-                                            name = value['name']
-                                            device_index = int(key) if key.isdigit() else i
-                                            print(f"  Adding device {device_index}: {name}")
-                                            self.audio_devices.addItem(name, device_index)
-                                            if device_index == current_device:
-                                                current_idx = self.audio_devices.count() - 1
-                            except:
-                                pass
-                    except Exception as e:
-                        print(f"Method 2 failed: {e}")
-                
-                # Method 3: If all else fails, just add numbered devices
-                if self.audio_devices.count() == 0:
-                    print("Method 3: Adding generic device numbers")
-                    for i in range(8):  # Add 8 generic devices
-                        self.audio_devices.addItem(f"Audio Device {i}", i)
-                        if i == current_device:
-                            current_idx = self.audio_devices.count() - 1
-                
-                # Set selected device to match current server device
-                if self.audio_devices.count() > 0:
-                    self.audio_devices.setCurrentIndex(current_idx)
-                    selected_name = self.audio_devices.currentText()
-                    selected_id = self.audio_devices.currentData()
-                    print(f"Set current audio device to: {selected_name} (index {selected_id})")
-                
-            except Exception as e:
-                print(f"Error getting audio devices: {e}")
-                self.audio_devices.addItem("Error listing audio devices", -1)
-        else:
-            self.audio_devices.addItem("No audio devices detected", -1)
+            self.audio_device_status = QLabel(f"Audio output device selected at startup. Current settings:\n"
+                                           f"- Device: {device}\n"
+                                           f"- Sample Rate: {sample_rate} Hz\n"
+                                           f"- Channels: {channels}")
+        except Exception:
+            # Simplest fallback
+            self.audio_device_status = QLabel("Audio output device selected at startup.")
         
-        self.audio_devices.currentIndexChanged.connect(self.change_audio_device)
-        
-        audio_layout.addWidget(self.audio_devices_label)
-        audio_layout.addWidget(self.audio_devices)
+        self.audio_device_status.setStyleSheet("color: #666; font-style: italic;")
         audio_layout.addWidget(self.audio_device_status)
         
-        # Update the status label with current device info
-        self.update_audio_device_status()
+        # Info label about changing audio
+        restart_label = QLabel("To change audio device, restart the application.")
+        restart_label.setStyleSheet("color: #666; font-style: italic;")
+        audio_layout.addWidget(restart_label)
         
-        # Sample rate and buffer size
-        audio_info_layout = QHBoxLayout()
-        
-        self.sample_rate_label = QLabel("Sample Rate:")
-        self.sample_rate = QComboBox()
-        self.sample_rate.addItems(["44100", "48000", "96000"])
-        if self.server:
-            current_sr = str(int(self.server.getSamplingRate()))
-            index = self.sample_rate.findText(current_sr)
-            if index >= 0:
-                self.sample_rate.setCurrentIndex(index)
-        
-        self.buffer_size_label = QLabel("Buffer Size:")
-        self.buffer_size = QComboBox()
-        self.buffer_size.addItems(["64", "128", "256", "512", "1024", "2048"])
-        if self.server:
-            current_bs = str(self.server.getBufferSize())
-            index = self.buffer_size.findText(current_bs)
-            if index >= 0:
-                self.buffer_size.setCurrentIndex(index)
-        
-        audio_info_layout.addWidget(self.sample_rate_label)
-        audio_info_layout.addWidget(self.sample_rate)
-        audio_info_layout.addWidget(self.buffer_size_label)
-        audio_info_layout.addWidget(self.buffer_size)
-        
-        audio_layout.addLayout(audio_info_layout)
-        
-        # Apply audio settings button
-        self.apply_audio_button = QPushButton("Apply Audio Settings")
-        self.apply_audio_button.clicked.connect(self.apply_audio_settings)
-        audio_layout.addWidget(self.apply_audio_button)
-        
-        # Add channel test button
-        self.test_channel_button = QPushButton("Test Audio Channels")
-        self.test_channel_button.clicked.connect(self.test_audio_channels_ui)
+        # Add channel test button only
+        self.test_channel_button = QPushButton("Test Audio")
+        self.test_channel_button.clicked.connect(self.test_audio)
         audio_layout.addWidget(self.test_channel_button)
         
         audio_group.setLayout(audio_layout)
@@ -823,7 +594,7 @@ class MainWindow(QWidget):
             self.midi_devices.addItem("No MIDI devices detected")
     
     def change_midi_device(self, index):
-        """Change the MIDI input device"""
+        """Change the MIDI input device with improved error handling"""
         if index < 0:
             return
         
@@ -836,348 +607,80 @@ class MainWindow(QWidget):
         
         # Open the selected device in the MIDI handler
         try:
-            # Create a new MIDI handler to ensure clean state
-            if hasattr(self, 'midi_handler'):
-                # Disconnect old signals first
-                try:
-                    self.midi_handler.note_on_signal.disconnect()
-                    self.midi_handler.note_off_signal.disconnect()
-                    self.midi_handler.pitch_bend_signal.disconnect()
-                except:
-                    pass
-                # Close the port
+            # If we have an existing handler, just close and reopen the port
+            if hasattr(self, 'midi_handler') and self.midi_handler:
+                print(f"Changing MIDI device to: {selected_device}")
+                # Close the current port
                 self.midi_handler.close_port()
                 
-            # Create a fresh MIDI handler
-            self.midi_handler = MidiHandler()
-            
-            # Reconnect signals
-            self.connect_midi_to_particle()
-            
-            # Open the port
-            success = self.midi_handler.open_port(selected_device)
-            if success:
-                print(f"Connected to MIDI device: {selected_device}")
-            else:
-                QMessageBox.warning(self, "MIDI Error", f"Could not connect to MIDI device: {selected_device}")
-        except Exception as e:
-            QMessageBox.warning(self, "MIDI Error", f"Error connecting to MIDI device: {e}")
-            print(f"MIDI connection error details: {e}")
-            # Try to reconnect to first available device
-            self.refresh_midi_devices()
-    
-    def change_audio_device(self, index):
-        """Store the selected audio device index to be applied with the button"""
-        # Just store the selection - actual change happens when Apply is clicked
-        # But we can update the preview of what will be applied
-        if index >= 0:
-            device_name = self.audio_devices.currentText()
-            device_id = self.audio_devices.currentData()
-            
-            # Update the status label to show the device will change after Apply
-            self.audio_device_status.setText(f"Selected: {device_name} (ID: {device_id}) - Click Apply to activate")
-            self.audio_device_status.setStyleSheet("color: #AA3300; font-style: italic;")
-    
-    def update_audio_device_status(self):
-        """Update the audio device status label with current server information"""
-        # Check if server exists first
-        if not hasattr(self, 'server') or self.server is None:
-            self.audio_device_status.setText("No audio server available")
-            self.audio_device_status.setStyleSheet("color: #AA0000; font-style: italic;")
-            return
-            
-        # Safely check if server is started
-        server_started = False
-        try:
-            server_started = self.server.getIsStarted()
-        except AttributeError:
-            pass
-        
-        if not server_started:
-            self.audio_device_status.setText("Audio server is not active")
-            self.audio_device_status.setStyleSheet("color: #AA0000; font-style: italic;")
-            return
-            
-        try:
-            # Get the device ID safely
-            device_id = None
-            try:
-                device_id = self.server.getOutputDevice()
-            except (AttributeError, TypeError) as e:
-                print(f"Could not get output device: {e}")
-                pass
-                
-            # Get device info safely
-            device_info = {}
-            try:
-                device_info = pyo.pa_get_output_devices()
-            except:
-                pass
-                
-            # Set device name
-            device_name = "Unknown device"
-            if device_id is not None:
-                device_name = device_info.get(device_id, f"Device {device_id}")
-            
-            # Get other stats safely
-            num_channels = 2  # Default
-            try:
-                num_channels = self.server.getNchnls()
-            except:
-                pass
-                
-            sr = 44100  # Default
-            try:
-                sr = self.server.getSamplingRate()
-            except:
-                pass
-                
-            bs = 256  # Default
-            try:
-                bs = self.server.getBufferSize()
-            except:
-                pass
-            
-            # Set a special color for multichannel devices
-            if num_channels > 2:
-                status_style = "color: #006600; font-style: italic; font-weight: bold;"
-                channel_text = f"{num_channels} channels (surround)"
-            else:
-                status_style = "color: #666666; font-style: italic;"
-                channel_text = f"{num_channels} channels (stereo)"
-                
-            self.audio_device_status.setText(f"Active: {device_name}\n{channel_text}, {sr} Hz, {bs} buffer")
-            self.audio_device_status.setStyleSheet(status_style)
-        except Exception as e:
-            self.audio_device_status.setText(f"Error getting device info: {e}")
-            self.audio_device_status.setStyleSheet("color: #AA0000; font-style: italic;")
-    
-    def apply_audio_settings(self):
-        """Apply audio settings (requires restart)"""
-        if not hasattr(self, 'server'):
-            return
-        
-        # Get the selected audio device
-        if self.audio_devices.currentIndex() < 0:
-            return
-            
-        device_index = self.audio_devices.itemData(self.audio_devices.currentIndex())
-        if device_index is None:
-            return
-            
-        # Get the device name for logging/debugging
-        device_name = self.audio_devices.currentText()
-        print(f"Applying audio settings for device: {device_name} (index: {device_index})")
-        
-        sample_rate = int(self.sample_rate.currentText())
-        buffer_size = int(self.buffer_size.currentText())
-        
-        # Try to determine number of channels directly from device name
-        nchnls = 2  # Default to stereo
-        if any(term in device_name.lower() for term in ["quad", "surround", "5.1", "7.1", "8", "loopback audio 2"]):
-            nchnls = 4  # Set to quad for multichannel audio interfaces
-            print(f"Detected multichannel device '{device_name}', setting to {nchnls} channels")
-        
-        # Warn that we need to restart the audio engine
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Warning)
-        msg.setText("Changing audio settings requires restarting the audio engine.")
-        msg.setInformativeText("Any playing notes will be cut off. Continue?")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        
-        if msg.exec_() == QMessageBox.Cancel:
-            return
-        
-        # Always use the complete server restart method - more reliable
-        print("\nRestarting audio system with new settings...")
-        
-        try:
-            # 1. Clean up the particle first
-            if hasattr(self, 'particle') and self.particle:
-                try:
-                    print("Shutting down particle...")
-                    self.particle.shutdown()
-                    self.particle = None
-                    print("Particle shut down successfully")
-                except Exception as e:
-                    print(f"Error shutting down particle: {e}")
-                    self.particle = None
-            
-            # 2. Fully shutdown the server
-            if hasattr(self, 'server') and self.server:
-                try:
-                    print("Shutting down server...")
-                    server_stopped = False
-                    
-                    # Try to stop it gracefully first
-                    try:
-                        if hasattr(self.server, 'stop'):
-                            self.server.stop()
-                            print("Server stopped successfully")
-                            server_stopped = True
-                    except Exception as e:
-                        print(f"Error stopping server: {e}")
-                        
-                    # If stop failed, try direct cleanup
-                    if not server_stopped:
-                        print("Trying direct cleanup...")
-                        
-                    # Clear the reference
-                    self.server = None
-                    print("Server reference cleared")
-                except Exception as e:
-                    print(f"Error during server shutdown: {e}")
-                    # Make sure the reference is cleared
-                    self.server = None
-                
-            # 3. Give the system time to release resources
-            print("Waiting for resources to be released...")
-            time.sleep(1.0)  # Increased wait time for better cleanup
-            
-            # 4. Create a completely fresh server with the new settings
-            print(f"Creating fresh server with device {device_index} and {nchnls} channels...")
-            
-            # First attempt with proper device specification
-            try:
-                print(f"Attempt 1: Creating server with device={device_index}...")
-                self.server = pyo.Server(
-                    sr=sample_rate, 
-                    buffersize=buffer_size,
-                    nchnls=nchnls
-                )
-                print("Server created successfully")
-                
-                # Boot the server
-                print("Booting the server...")
-                self.server.boot()
-                print("Server booted successfully")
-                
-                # Set the device before starting
-                print(f"Setting output device to {device_index}...")
-                self.server.setOutputDevice(device_index)
-                print(f"Output device set to {device_index}")
-                
-                # Start the server
-                print("Starting the server...")
-                self.server.start()
-                print("Server started successfully")
-                
-            except Exception as e:
-                print(f"First server creation attempt failed: {e}")
-                
-                # Second attempt with minimal parameters
-                try:
-                    print("Attempt 2: Creating server with minimal parameters...")
-                    self.server = pyo.Server(nchnls=nchnls)
-                    print("Server created with minimal parameters")
-                    
-                    # Boot first
-                    self.server.boot()
-                    print("Server booted")
-                    
-                    # Set parameters after booting
-                    try:
-                        self.server.setOutputDevice(device_index)
-                    except:
-                        print("Could not set device")
-                        
-                    # Start the server
-                    self.server.start()
-                    print("Server started")
-                    
-                except Exception as e:
-                    print(f"Second server creation attempt failed: {e}")
-                    
-                    # Last resort - default server
-                    try:
-                        print("Attempt 3: Creating default server...")
-                        self.server = pyo.Server()
-                        self.server.boot()
-                        self.server.start()
-                        print("Default server started")
-                    except Exception as e:
-                        print(f"Default server creation failed: {e}")
-                        self.server = None
-                        raise Exception("Could not create audio server")
-            
-            # 5. Verify server is working properly
-            if not hasattr(self.server, 'getIsStarted') or not self.server.getIsStarted():
-                raise Exception("Server failed to start properly")
-                
-            print("Audio server successfully restarted")
-                
-            # 6. Create a new particle
-            try:
-                print("Creating new particle...")
-                self.particle = Particle(self.server)
-                if not self.particle.initialized:
-                    print("Warning: Particle not initialized properly")
+                # Open the new port (existing handler)
+                success = self.midi_handler.open_port(selected_device)
+                if success:
+                    print(f"Connected to MIDI device: {selected_device}")
                 else:
-                    print("Particle initialized successfully")
-            except Exception as e:
-                print(f"Error creating particle: {e}")
-                self.particle = None
-                raise Exception("Failed to create particle")
-            
-            # 7. Make sure the UI knows which oscillators to use
-            try:
-                osc_names = list(self.particle.oscillators.keys())
-                print(f"Available oscillators: {osc_names}")
-                
-                # Reset the UI
-                self.reset_ui_for_new_server()
+                    print(f"Could not connect to MIDI device: {selected_device}")
+                    # Don't show an error dialog - just log it
+            else:
+                # Create a new MIDI handler
+                print(f"Creating new MIDI handler for device: {selected_device}")
+                self.midi_handler = MidiHandler()
                 
                 # Connect signals
                 self.connect_midi_to_particle()
-                self.connect_bypass_signals()
                 
-            except Exception as e:
-                print(f"Error updating UI: {e}")
-            
-            # 8. Get the actual settings that were applied
-            actual_device = device_index  # Default fallback
-            try:
-                if hasattr(self.server, 'getOutputDevice'):
-                    actual_device = self.server.getOutputDevice()
-            except Exception as e:
-                print(f"Could not get actual device: {e}")
-                
-            try:
-                actual_sr = self.server.getSamplingRate()
-            except:
-                actual_sr = sample_rate
-                
-            try:
-                actual_bs = self.server.getBufferSize()
-            except:
-                actual_bs = buffer_size
-                
-            try:
-                actual_nchnls = self.server.getNchnls()
-            except:
-                actual_nchnls = nchnls
-            
-            print(f"Actual settings: Device={actual_device}, SR={actual_sr}, BS={actual_bs}, Channels={actual_nchnls}")
-            
-            # 9. Test the audio channels
-            try:
-                self.test_audio_channels(actual_nchnls)
-            except Exception as e:
-                print(f"Error testing audio channels: {e}")
-            
-            # 10. Update the UI status
-            try:
-                self.update_audio_device_status()
-            except Exception as e:
-                print(f"Error updating device status: {e}")
-            
-            # 11. Show success message
-            QMessageBox.information(self, "Audio Settings", 
-                f"Audio settings applied successfully.\n\nDevice: {device_name}\nSample Rate: {actual_sr} Hz\nBuffer Size: {actual_bs}\nChannels: {actual_nchnls}")
-                
+                # Open the port
+                success = self.midi_handler.open_port(selected_device)
+                if success:
+                    print(f"Connected to MIDI device: {selected_device}")
+                else:
+                    print(f"Could not connect to MIDI device: {selected_device}")
         except Exception as e:
-            QMessageBox.critical(self, "Audio Error", 
-                f"Error applying audio settings: {e}\n\nThe synthesizer may not produce sound correctly.")
+            print(f"MIDI connection error details: {e}")
+            # Don't show error dialog - it's disruptive and not critical
+            # Just try to reconnect to first available device
+            self.refresh_midi_devices()
+    
+    def test_audio(self):
+        """Simple audio test function using direct sine output"""
+        if not hasattr(self, 'server') or not self.server:
+            QMessageBox.warning(self, "Audio Test", "Audio server is not available")
+            return
+        
+        try:
+            # Use direct sine output to avoid mixer compatibility issues
+            tones = []
+            
+            # Play a simple C major chord - one tone at a time with delays
+            def play_c():
+                # C4
+                tone = pyo.Sine(freq=261.63, mul=0.3).out()
+                tones.append(tone)
+                QTimer.singleShot(750, play_e)  # Play E after 0.75 seconds
+                
+            def play_e():
+                # E4
+                tone = pyo.Sine(freq=329.63, mul=0.3).out()
+                tones.append(tone)
+                QTimer.singleShot(750, play_g)  # Play G after 0.75 seconds
+                
+            def play_g():
+                # G4
+                tone = pyo.Sine(freq=392.00, mul=0.3).out()
+                tones.append(tone)
+                QTimer.singleShot(750, stop_all)  # Stop all after 0.75 seconds
+                
+            def stop_all():
+                for tone in tones:
+                    tone.stop()
+            
+            # Start the sequence
+            play_c()
+            
+            # Show message
+            QMessageBox.information(self, "Audio Test", "Playing C-E-G arpeggio (notes will play one at a time)")
+        
+        except Exception as e:
+            QMessageBox.warning(self, "Audio Test Error", f"Error testing audio: {e}")
             
     def reset_ui_for_new_server(self):
         """Reset the UI when switching to a new server"""
@@ -1754,8 +1257,32 @@ class MainWindow(QWidget):
             self.server.shutdown()
 
 
+def simple_test_tone(server, frequency=440, duration=1.0):
+    """Play a simple test tone"""
+    print(f"Testing with {frequency}Hz tone")
+    tone = pyo.Sine(freq=frequency, mul=0.3).out()
+    time.sleep(duration)
+    tone.stop()
+    print("Test tone complete")
+
 if __name__ == "__main__":
+    # === SETUP === (Only prompt for audio device)
+    audio_index = select_audio_device()
+    nchnls = select_num_channels()  
+    
+    # Don't select MIDI port from CLI - let the GUI handle it
+    midi_port = None  # Will be selected in the GUI
+    
+    # Start the server with selected settings
+    print("Starting audio server...")
+    server = start_server(audio_index, nchnls)
+    print(f"Server started successfully with {nchnls} channels")
+    
+    # Launch the Qt application
+    print("Launching UI...")
     app = QApplication(sys.argv)
-    win = MainWindow()
+    win = MainWindow(server, midi_port)
     win.show()
+    
+    # Run the application
     sys.exit(app.exec_())

@@ -70,7 +70,7 @@ car2:
   amp_dist: Equal
   amp_ramp_delay: 0.0
   amp_ramp_end: 1.0
-  amp_ramp_start: 0.0
+  amp_ramp_start: 1.0
   amp_ramp_time: 1.0
   amp_release: 0.5
   amp_sustain: 0.7
@@ -86,7 +86,7 @@ car2:
     channel_0: 0.0
     channel_1: 1.0
     channel_2: 0.0
-    channel_3: 0.0
+    channel_3: 1.0
   coarse_detune: 0.0
   detune: 0.0
   detune_mode: Linear

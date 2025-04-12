@@ -43,9 +43,16 @@ class Particle:
         self.output_channels = min(4, self.server.getNchnls())
         print(f"Initializing with {self.output_channels} output channels")
         
-        # Use Mixer instead of Receive for buses
-        # Create a mixer for handling output routing
-        self.mixer = pyo.Mixer(outs=self.output_channels, chnls=2)  # 2 channels input, variable output
+        # Use Mixer for output routing, with compatibility for different pyo versions
+        try:
+            # Try the newer pyo version first with outs and chnls parameters
+            self.mixer = pyo.Mixer(outs=self.output_channels, chnls=2)  # 2 channels input, variable output
+            print("Using pyo.Mixer with outs/chnls parameters")
+        except TypeError:
+            # Fall back to older pyo version that doesn't support outs/chnls
+            print("Falling back to basic pyo.Mixer")
+            self.mixer = pyo.Mixer(voices=self.output_channels, outs=self.output_channels)
+            # Note: in older pyo, voices controls the number of inputs
         
         # Route mixer outputs directly to audio channels
         # In Pyo, the mixer automatically routes to output channels
@@ -75,6 +82,17 @@ class Particle:
         
         # Apply the modulation routing
         self.apply_modulation_matrix()
+        
+        # Print debug info about the oscillators
+        for name, osc in self.oscillators.items():
+            if osc and osc.initialized:
+                print(f"Oscillator {name} is initialized and ready.")
+                if hasattr(osc, 'direct_out'):
+                    print(f" - {name} has direct output enabled")
+                else:
+                    print(f" - WARNING: {name} has no direct output")
+            else:
+                print(f"WARNING: Oscillator {name} is not properly initialized")
         
         # Connect the oscillators to the output mixer with default routing
         car1 = self.oscillators.get("CAR1")
@@ -118,20 +136,20 @@ class Particle:
         if not self.initialized:
             return
             
-        # Clear existing modulation for all oscillators
+        # Get each oscillator's modulation signal
+        mod_signals = {}
         for name, osc in self.oscillators.items():
-            # We don't want to clear channel routing, just modulation destinations
-            # This method doesn't affect channel sends
-            pass
+            if osc.initialized:
+                mod_signals[name] = osc.get_mod_output()
         
-        # Apply new modulation
+        # Apply new modulation based on the matrix
         for source_name, destinations in self.modulation_matrix.items():
-            source_osc = self.oscillators.get(source_name)
-            if not source_osc or not source_osc.initialized:
+            # Skip if the source doesn't have a valid mod signal
+            if source_name not in mod_signals:
                 continue
                 
-            # Get the modulation signal from the source
-            mod_signal = source_osc.get_mod_output()
+            # Get the modulation signal
+            mod_signal = mod_signals[source_name]
             if not mod_signal:
                 continue
                 
@@ -281,17 +299,52 @@ class Particle:
             
             # For mixer approach:
             if hasattr(self, 'mixer') and hasattr(osc, 'stereo'):
-                # Ensure we're connected to the mixer input for this channel
+                # Try both older and newer pyo Mixer API versions
                 try:
-                    # Remove any previous connection first
-                    self.mixer.delInput(channel, 0)
-                except:
-                    pass  # Ignore errors if not previously connected
+                    # First attempt - Use modern pyo API
+                    try:
+                        self.mixer.delInput(channel, 0)  # New style: delInput(chnl, voice)
+                        if amount > 0:
+                            self.mixer.addInput(channel, osc.stereo)
+                            self.mixer.setAmp(channel, 0, amount)
+                        print(f"Using modern pyo.Mixer API for routing {oscillator_name} to channel {channel}")
+                    except TypeError:
+                        # Second attempt - Use older pyo API 
+                        try:
+                            self.mixer.delInput(channel)  # Old style: delInput(voice)
+                            if amount > 0:
+                                self.mixer.addInput(channel, osc.stereo)
+                                self.mixer.setAmp(channel, 0, amount)
+                            print(f"Using older pyo.Mixer API for routing {oscillator_name} to channel {channel}")
+                        except Exception as e2:
+                            print(f"Mixer routing failed with error: {e2}")
+                            
+                            # Final fallback - direct channel output
+                            if amount > 0:
+                                # Direct output to channel as fallback
+                                direct_out = osc.stereo * amount
+                                direct_out.out(chnl=channel)
+                                
+                                # Store reference to avoid garbage collection
+                                if not hasattr(osc, 'direct_channel_outputs'):
+                                    osc.direct_channel_outputs = {}
+                                osc.direct_channel_outputs[channel] = direct_out
+                                print(f"Using direct output for {oscillator_name} to channel {channel}")
+                except Exception as e:
+                    print(f"Error in channel routing: {e}")
                     
-                # Connect to mixer with the specified amount
-                if amount > 0:
-                    self.mixer.addInput(channel, osc.stereo)
-                    self.mixer.setAmp(channel, 0, amount)  # Channel, voice, amplitude
+                    # Last resort - ensure direct output is enabled for carriers
+                    if oscillator_name.startswith("CAR") and amount > 0:
+                        try:
+                            direct_out = osc.stereo * amount
+                            direct_out.out(chnl=channel)
+                            # Keep reference
+                            if not hasattr(osc, 'emergency_outputs'):
+                                osc.emergency_outputs = {}
+                            osc.emergency_outputs[channel] = direct_out
+                            print(f"Emergency direct output enabled for {oscillator_name} to channel {channel}")
+                        except Exception as e3:
+                            print(f"Emergency routing also failed: {e3}")
     
     def get_output_channels(self):
         """Return the number of output channels"""

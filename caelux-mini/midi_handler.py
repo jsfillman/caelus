@@ -23,6 +23,11 @@ class MidiHandler(QObject):
         self.close_port()
         
         try:
+            # If port name is None or empty, just return without error
+            if not port_name or port_name in ["No MIDI devices detected", "Error listing MIDI devices"]:
+                print("No valid MIDI device to connect")
+                return False
+                
             self.midi_port = mido.open_input(port_name)
             print(f"Connected to MIDI device: {port_name}")
             
@@ -31,6 +36,10 @@ class MidiHandler(QObject):
                 self.timer = QTimer()
                 self.timer.timeout.connect(self.poll_midi)
                 self.timer.start(5)  # Poll every 5ms for low latency
+            else:
+                # Make sure the timer is running
+                if not self.timer.isActive():
+                    self.timer.start(5)
                 
             return True
         except Exception as e:

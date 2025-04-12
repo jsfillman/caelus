@@ -139,12 +139,23 @@ class Oscillator:
             channel_amp = pyo.SigTo(0, time=0.02)  # Smooth transitions for gain changes
             self.channel_amps.append(channel_amp)
             
-        # Debug output - we'll have an "out" object for direct testing of audio
+        # Debug output - we'll have multiple backup methods for direct audio output
         if self.osc_type == "carrier":
-            # For direct testing, send carrier to output with 30% volume
-            self.direct_out = self.stereo * 0.3
+            # For direct testing, send carrier to multiple outputs to ensure sound
+            # 1. Direct stereo output
+            self.direct_out = self.stereo * 0.7  # Higher volume for better audibility
             self.direct_out.out()
-            print(f"Direct output enabled for {self.name}")
+            
+            # 2. Backup simple sine connection for most basic audio path
+            self.backup_osc = pyo.Sine(freq=self.modulated_freq, mul=0.3)
+            self.backup_out = self.backup_osc * self.amp_env
+            self.backup_out.out()
+            
+            # 3. Pan object approach (works better with some audio systems)
+            self.pan_backup = pyo.Pan(self.moog_filter, mul=0.4)
+            self.pan_backup.out()
+            
+            print(f"Multiple direct outputs enabled for {self.name} - audio should definitely work")
         
         # Route destinations - each oscillator can be routed to any channel or as a mod source
         # Initialize with defaults based on oscillator type
@@ -387,20 +398,36 @@ class Oscillator:
 
         # Amplitude envelope if not bypassed
         if not self.amp_bypass:
-            self.amp_env.setAttack(gui.amp_attack.itemAt(1).widget().value())
-            self.amp_env.setDecay(gui.amp_decay.itemAt(1).widget().value())
-            self.amp_env.setSustain(gui.amp_sustain.itemAt(1).widget().value())
-            self.amp_env.setRelease(gui.amp_release.itemAt(1).widget().value())
-            self.amp_env.mul = 0.75  # Higher value for debug
+            # Get envelope parameters from GUI
+            attack = gui.amp_attack.itemAt(1).widget().value()
+            decay = gui.amp_decay.itemAt(1).widget().value()
+            sustain = gui.amp_sustain.itemAt(1).widget().value()
+            release = gui.amp_release.itemAt(1).widget().value()
+            
+            # Set envelope parameters with default fallbacks
+            self.amp_env.setAttack(attack if attack > 0 else 0.01)
+            self.amp_env.setDecay(decay if decay > 0 else 0.1)
+            self.amp_env.setSustain(sustain)
+            self.amp_env.setRelease(release if release > 0 else 0.1)
+            
+            # Use higher volume for better audibility
+            self.amp_env.mul = 1.0  # Full amplitude for direct output
+            
+            # Play the envelope and log settings
             self.amp_env.play()
-            print(f"{self.name}: Playing with envelope A={self.amp_env.attack}, D={self.amp_env.decay}, S={self.amp_env.sustain}, R={self.amp_env.release}")
+            print(f"{self.name}: Playing with envelope A={self.amp_env.attack}, D={self.amp_env.decay}, " + 
+                  f"S={self.amp_env.sustain}, R={self.amp_env.release}")
         else:
-            # Constant amplitude when bypassed
+            # Constant amplitude when bypassed - use immediate attack/release
             self.amp_env.setAttack(0.01)
             self.amp_env.setDecay(0.01)
             self.amp_env.setSustain(1.0)
             self.amp_env.setRelease(0.01)
-            self.amp_env.mul = 0.75  # Higher value for debug
+            
+            # Use full amplitude for better audibility
+            self.amp_env.mul = 1.0
+            
+            # Play the envelope and log settings
             self.amp_env.play()
             print(f"{self.name}: Playing with constant amplitude (bypass mode)")
 
