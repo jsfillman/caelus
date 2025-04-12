@@ -18,6 +18,12 @@ A distributed additive/FM synthesizer designed for immersive surround sound synt
 
 [View Caelux Documentation](caelux/docs/DesignDoc.md)
 
+### Caelux Micro
+
+An ultra-lightweight version of Caelux designed for minimal resource usage while retaining core functionality. Provides essential FM and additive synthesis capabilities with basic UI controls and can be integrated into the larger Caelux ecosystem or run standalone.
+
+[View Caelux Micro README](caelux-micro/README.md)
+
 ### Caelux Mini
 
 A standalone, simplified version of the larger Caelux synthesizer focusing on high-quality sound design using a combination of FM and additive synthesis with multichannel routing for immersive sound.
