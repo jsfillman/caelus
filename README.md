@@ -1,36 +1,129 @@
-# Octolux
+# Caelus
 
-![Octolux Logo](Octolux.png)
+Caelus is an advanced, modular FM synthesis engine built with Python and the `pyo` audio processing library. It provides a flexible, high-quality framework for creating complex FM sounds with extensive modulation capabilities.
 
-**Octolux** is a modular 8-oscillator wavetable synthesizer built with Python and [pyo](http://ajaxsoundstudio.com/software/pyo/).  
-Designed for immersive sound design and real-time control, it features per-oscillator detuning, envelope shaping, and filter modulation — all routed independently for surround/spatial mixing in Dolby Atmos or multi-channel environments.
+## Overview
 
----
+Caelus implements a sophisticated FM synthesis architecture with the following features:
 
-## 🎛 Features
+- Multiple operator FM synthesis
+- Extensive modulation capabilities with time-varying parameters
+- Parameter ramping for dynamic timbral evolution
+- MIDI input with monophonic / MPE capabilities and aftertouch support
+- Comprehensive GUI controls for all synthesis parameters
+- High-quality audio output with proper limiting and 3d spatialization
 
-- **8 fully independent oscillators**
-  - Selectable wavetables per oscillator
-  - Semitone and cents detuning
-  - ADSR envelopes with real-time GUI control
-  - Moog-style low-pass filter with resonance
-  - LFO-modulated filter cutoff (rate + depth)
-- **Per-oscillator audio routing** to discrete output channels
-- **PyQt6 GUI** with waveform selector and grouped control layout
-- Compatible with **Blackhole** or other virtual audio interfaces for DAW routing
-- Designed for **Logic Pro Atmos mixing**, but works in stereo too
+## Core Components
 
----
+The synthesis engine is built around these key components:
 
-## 🔧 Requirements
+1. **Operator System**: Independent oscillators that can function as carriers or modulators
+2. **Envelope System**: ADSR envelopes for both amplitude and frequency modulation
+3. **Ramping System**: Linear segment generators (Linseg) for time-based parameter evolution
+4. **MIDI Interface**: Real-time MIDI input with note priority management
+5. **GUI System**: Comprehensive control interface for all synthesis parameters
 
-- Python 3.10+
-- `pyo`
-- `PyQt6`
-- [Blackhole](https://existential.audio/blackhole/) (for multi-channel routing)
+## Architecture
 
-Install dependencies:
+The current architecture supports multiple configurations:
+
+- **MegaPartial**: A complex FM synthesizer with 12 modulators arranged in various FM and AM chains
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.7+
+- pyo audio library
+- mido for MIDI handling
+
+### Installation
 
 ```bash
-pip install pyo PyQt6
+pip install pyo mido
+```
 
+### Running the Synthesizer
+
+To start the basic synthesizer:
+
+```bash
+python mega-partial-2op.py
+```
+
+For the more advanced implementation:
+
+```bash
+python mega-partial.py
+```
+
+## Parameter Guide
+
+### Operator Controls
+
+Each operator has the following parameters:
+
+- **Ratio**: The frequency ratio relative to the carrier frequency
+
+- **Index**: The modulation depth (how much this operator affects others)
+
+- **Frequency Offset**: Static offset in Hz added to the operator's frequency
+
+- **Envelope Controls**: Attack, Decay, Sustain, Release for both amplitude and frequency
+
+- Ramp Parameters
+
+  :
+
+  - Frequency Ramp: Start value, end value, and duration
+  - Amplitude Ramp: Start value, end value, and duration
+
+- **Delay**: Time delay before envelope triggering
+
+### FM Routing
+
+The operators are arranged in a serial configuration:
+
+- Series: Op1 → Op2 → Carrier
+
+## Development Roadmap
+
+### 1. Server Capabilities
+
+- Implement OSC (Open Sound Control) server functionality
+- Create network-accessible endpoints for remote control
+- Support for remote MIDI input over network
+- Parameter state saving and loading
+
+### 2. Remote Control Interfaces
+
+- TouchOSC layout design
+- Lemur interface implementation
+- WebSocket API for browser-based control
+
+### 3. Custom GUI
+
+- Develop Svelte + Tailwind interface
+- Design intuitive parameter visualization
+- Implement preset management system
+- Create visual feedback for modulation activity
+
+### 4. Extended Features
+
+- Multiple voice polyphony via multi-channel MPE
+- Additional synthesis algorithms by adding mulitple "mega partials" per channel
+- Effects processing chain
+- Sample recording and export
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+[License details here]
+
+## Acknowledgments
+
+- Built with the powerful pyo audio processing library
+- Inspired by classic FM synthesizers like the Yamaha DX7 and modern FM implementations
