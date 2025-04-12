@@ -139,23 +139,45 @@ class Oscillator:
             channel_amp = pyo.SigTo(0, time=0.02)  # Smooth transitions for gain changes
             self.channel_amps.append(channel_amp)
             
-        # Debug output - we'll have multiple backup methods for direct audio output
+        # Keep some direct outputs active for reliable audio output
         if self.osc_type == "carrier":
-            # For direct testing, send carrier to multiple outputs to ensure sound
-            # 1. Direct stereo output
-            self.direct_out = self.stereo * 0.7  # Higher volume for better audibility
-            self.direct_out.out()
-            
-            # 2. Backup simple sine connection for most basic audio path
-            self.backup_osc = pyo.Sine(freq=self.modulated_freq, mul=0.3)
-            self.backup_out = self.backup_osc * self.amp_env
-            self.backup_out.out()
-            
-            # 3. Pan object approach (works better with some audio systems)
-            self.pan_backup = pyo.Pan(self.moog_filter, mul=0.4)
-            self.pan_backup.out()
-            
-            print(f"Multiple direct outputs enabled for {self.name} - audio should definitely work")
+            # Each carrier will have its own direct output path
+            if self.name == "CAR1":
+                # CAR1 outputs to channels 0-1 
+                self.direct_out = self.stereo * 0.5  # Moderate volume
+                # Create a simple stereo output - will be channels 0,1
+                self.direct_out.out()
+                print(f"{self.name} connected to channels 0-1 with direct output")
+            elif self.name == "CAR2":
+                # For CAR2, we'll do a manual routing to channels 2-3 if available
+                if self.server.getNchnls() >= 4:
+                    # Create direct output to channels 2-3
+                    self.l_direct = self.l_out * 0.5  # Moderate volume for left
+                    self.r_direct = self.r_out * 0.5  # Moderate volume for right
+                    self.l_direct.out(chnl=2)  # CH2 gets left signal 
+                    self.r_direct.out(chnl=3)  # CH3 gets right signal
+                    print(f"{self.name} connected to channels 2-3 with direct output")
+                else:
+                    # No output if only 2 channels are available
+                    print(f"{self.name} has no direct output (only 2 channels available)")
+                    
+            # Backup sine tone is still useful to ensure we always have sound
+            self.backup_osc = pyo.Sine(freq=self.modulated_freq, mul=0.1)
+            # Route backup according to oscillator name
+            if self.name == "CAR1":
+                # Backup - create mono output sent to channels 0,1
+                backup_pan = pyo.Pan(self.backup_osc * self.amp_env, outs=2)
+                self.backup_out = backup_pan
+                self.backup_out.out()  # Outputs to 0,1
+            elif self.name == "CAR2" and self.server.getNchnls() >= 4:
+                # Manual routing for 2nd pair backup
+                backup_l = self.backup_osc * self.amp_env * 0.1
+                backup_r = self.backup_osc * self.amp_env * 0.1
+                backup_l.out(chnl=2)
+                backup_r.out(chnl=3)
+                self.backup_out = backup_l  # Store reference
+                
+            print(f"Direct outputs configured for {self.name} with appropriate channel assignments")
         
         # Route destinations - each oscillator can be routed to any channel or as a mod source
         # Initialize with defaults based on oscillator type
@@ -475,14 +497,23 @@ class Oscillator:
             return
         
         # Create a scaled version of the modulation signal
-        scaled_mod = mod_signal * amount
+        # Use an extremely high modulation factor to ensure audible FM effects
+        # Scale is much higher for strong effect
+        scaled_mod = mod_signal * (amount * 30.0)
         
         # Apply it to the modulated frequency
         self.modulated_freq = self.final_freq + scaled_mod
         self.osc.freq = self.modulated_freq
         
+        # Update any backup oscillators too
+        if hasattr(self, 'backup_osc'):
+            self.backup_osc.freq = self.modulated_freq
+        
         # Store reference to the modulation signal to prevent garbage collection
         self._mod_signal = scaled_mod
+        
+        # Print confirmation of modulation
+        print(f"Applied modulation to {self.name} with amount {amount}")
     
     def get_mod_output(self):
         """Get the modulation output signal (for operators or carriers)"""
