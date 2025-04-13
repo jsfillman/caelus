@@ -125,6 +125,11 @@ class RTPSender:
             return False
         
         try:
+            # Check for empty or None buffer
+            if buffer is None or len(buffer) == 0:
+                logger.warning("Empty buffer provided to stream_buffer")
+                return False
+                
             # Convert float32 audio to int16 PCM
             pcm_data = (buffer * 32767).astype(np.int16)
             
@@ -186,8 +191,12 @@ class RTPSender:
             
             logger.info(f"Streaming {num_chunks} chunks, {chunk_interval*1000:.1f}ms apart")
             
-            # Stream each chunk
-            for i in range(num_chunks):
+            # Maximum streaming time (0.5 seconds - much shorter to stop more quickly)
+            max_duration = 0.5  # in seconds (reduced from 4.0)
+            max_chunks = min(num_chunks, int(max_duration / chunk_interval))
+            
+            # Stream each chunk (up to max_chunks)
+            for i in range(max_chunks):
                 if not self.streaming:
                     logger.info("Streaming stopped")
                     break
@@ -215,7 +224,7 @@ class RTPSender:
                 # Wait for next chunk
                 time.sleep(chunk_interval)
             
-            logger.info(f"Finished streaming {num_chunks} chunks")
+            logger.info(f"Finished streaming {max_chunks} of {num_chunks} chunks (limited to {max_duration}s)")
             
         except Exception as e:
             logger.error(f"Error in streaming thread: {e}")

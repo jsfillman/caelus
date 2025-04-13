@@ -103,7 +103,13 @@ class MIDIInputHandler:
             message (mido.Message): MIDI message
         """
         if self.callback is not None:
-            self.callback(message)
+            # For real MIDI input, make a copy to prevent shared reference issues
+            # This is important for multi-threaded processing
+            if hasattr(message, 'copy'):
+                message_copy = message.copy()
+                self.callback(message_copy)
+            else:
+                self.callback(message)
         else:
             # Default message handling
             if message.type == 'note_on':

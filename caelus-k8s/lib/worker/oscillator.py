@@ -82,21 +82,26 @@ class SineOscillator:
         if note in self.active_notes:
             # Get note properties
             freq, amp = self.active_notes[note]
+            logger.info(f"Stopping note {note} with freq={freq:.2f}, amp={amp:.2f}")
             
             # Remove note from active notes
             del self.active_notes[note]
             
-            # Create a short release envelope - fade out over 50ms
-            duration = 0.05  # 50ms
+            # Create a release envelope - fade out over 100ms
+            duration = 0.1  # 100ms (increased from 50ms)
             samples = int(self.sr * duration)
             
-            # Linear fade out
-            envelope = np.linspace(amp, 0, samples)
+            # Exponential fade out (more natural sounding)
+            # Using curve that starts at 1.0 and ends at ~0
+            envelope = np.exp(-np.linspace(0, 5, samples)) * amp
             t = np.linspace(0, duration, samples, False)
             release_buffer = envelope * np.sin(2 * np.pi * freq * t)
             
-            logger.info(f"Stopped note {note}, generated release buffer")
+            logger.info(f"Generated release buffer for note {note} with {samples} samples")
             return release_buffer
         
-        logger.warning(f"Note {note} not playing")
-        return np.zeros(int(0.01 * self.sr))  # Short silence if note not found
+        logger.warning(f"Note {note} not playing, active notes: {list(self.active_notes.keys())}")
+        # Return a silent buffer
+        silent_buffer = np.zeros(int(0.01 * self.sr))
+        logger.info(f"Returning silent buffer with {len(silent_buffer)} samples")
+        return silent_buffer

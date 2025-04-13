@@ -59,6 +59,12 @@ For Kubernetes deployment, see the [Kubernetes README](kubernetes/README.md).
 ./caelus controller --worker-ip 127.0.0.1 --test
 ```
 
+### Run Without Audio Output
+
+```
+./caelus controller --worker-ip 127.0.0.1 --offline --test
+```
+
 ## Architecture
 
 - **Controller**: Receives MIDI, sends OSC, receives RTP, mixes audio

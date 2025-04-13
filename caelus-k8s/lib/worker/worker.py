@@ -92,8 +92,13 @@ class CaelusWorker:
                 logger.warning(f"Maximum polyphony reached ({self.max_polyphony}), ignoring note {note}")
                 return
             
-            # Store active note
-            self.active_notes[note] = (self.oscillator.note_to_freq(note), velocity/127.0)
+            # Calculate frequency and amplitude
+            frequency = self.oscillator.note_to_freq(note)
+            amplitude = velocity/127.0
+            
+            # Store active note in both worker and oscillator
+            self.active_notes[note] = (frequency, amplitude)
+            self.oscillator.active_notes[note] = (frequency, amplitude)
             
             # Add to render queue
             with self.render_lock:
@@ -124,17 +129,32 @@ class CaelusWorker:
                 rtp_port = self.controllers.get(controller_ip, (5000, 0))[0]
                 
                 # Generate release buffer
+                # Store the note in oscillator.active_notes to prevent warnings
+                if note not in self.oscillator.active_notes:
+                    # Register the note in the oscillator using the same parameters
+                    freq, amp = self.active_notes[note]
+                    self.oscillator.active_notes[note] = (freq, amp)
+                    
                 release_buffer = self.oscillator.stop_note(note)
                 
                 # Set up RTP stream to controller if needed
                 self.rtp_sender.setup(controller_ip, rtp_port)
                 
-                # If there's a release buffer, stream it
+                # First, ensure any ongoing continuous streaming is stopped
+                self.rtp_sender.stop_streaming()
+                logger.info(f"Stopped any ongoing streaming for note {note}")
+                
+                # Then, if there's a release buffer, stream it
                 if release_buffer is not None:
-                    self.rtp_sender.stream_buffer(release_buffer)
+                    logger.info(f"Streaming release buffer for note {note}")
+                    result = self.rtp_sender.stream_buffer(release_buffer)
+                    logger.info(f"Result of streaming release buffer: {result}")
+                else:
+                    logger.warning(f"No release buffer generated for note {note}")
                 
                 # Remove from active notes
                 del self.active_notes[note]
+                logger.info(f"Removed note {note} from active_notes dict (now: {list(self.active_notes.keys())})")
             else:
                 logger.warning(f"Received note_off for inactive note: {note}")
         except Exception as e:
@@ -177,18 +197,24 @@ class CaelusWorker:
                     # Set up RTP stream to controller
                     self.rtp_sender.setup(controller_ip, rtp_port)
                     
-                    # Generate audio - use longer buffer for sustained note
-                    duration = 1.0  # 1 second of audio
+                    # Check if the note is still active (might have been turned off already)
+                    if note not in self.active_notes:
+                        logger.info(f"Note {note} already turned off, not rendering")
+                        continue
+                    
+                    # Generate audio - use shorter buffer for sustained note to reduce load
+                    duration = 0.5  # 0.5 second of audio (reduced from 1.0)
                     frequency = self.oscillator.note_to_freq(note)
                     amplitude = velocity / 127.0
                     
-                    # Generate continuous tone - 1 second of sine wave audio
+                    # Generate continuous tone - sine wave audio
                     t = np.linspace(0, duration, int(self.sample_rate * duration), False)
                     audio_buffer = amplitude * np.sin(2 * np.pi * frequency * t)
                     
                     # Stream audio in chunks for better playback
-                    chunk_size = 1024
-                    chunk_interval = 0.02  # 20ms between chunks, for ~50 packets per second
+                    # Using smaller chunks and longer intervals to prevent controller buffer overflow
+                    chunk_size = 512  # Smaller chunks
+                    chunk_interval = 0.05  # 50ms between chunks, for ~20 packets per second
                     
                     # Use chunked streaming for better playback
                     self.rtp_sender.stream_buffer_chunked(

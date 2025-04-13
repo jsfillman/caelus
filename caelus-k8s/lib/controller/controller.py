@@ -44,12 +44,14 @@ class WorkerConfig:
 class CaelusController:
     """Caelus K8s controller that routes MIDI to workers via OSC."""
     
-    def __init__(self, rtp_port=5000):
+    def __init__(self, rtp_port=5000, offline_mode=False):
         """Initialize the controller.
         
         Args:
             rtp_port (int): Port to listen on for RTP
+            offline_mode (bool): If True, don't try to use audio output
         """
+        self.offline_mode = offline_mode
         self.rtp_port = rtp_port
         
         # Create worker registry
@@ -61,7 +63,7 @@ class CaelusController:
         self.osc_server = OSCServer("0.0.0.0", 8000, self.dispatcher)
         
         # Create RTP receiver to get audio from workers
-        self.rtp_receiver = RTPReceiver()
+        # Pass offline_mode to constructor later when setting up
         
         # Create MIDI input handler
         self.midi_handler = MIDIInputHandler()
@@ -195,13 +197,15 @@ class CaelusController:
         """
         logger.info(f"Note on: {note}, velocity: {velocity}")
         
+        # Ignore velocity 0 (treated as note-off in some MIDI devices)
+        if velocity == 0:
+            self._handle_note_off(note)
+            return
+            
         # Check if note is already playing
         if note in self.active_notes:
-            # Send note off to the current worker first
-            worker_ip = self.active_notes[note]
-            if worker_ip in self.workers:
-                self.workers[worker_ip].osc_client.send_note_off(note)
-                self.workers[worker_ip].active_notes.remove(note)
+            # Already playing, stop the previous instance
+            self._handle_note_off(note)
         
         # Find a worker to play the note
         worker_ip = self._find_worker_for_note()
@@ -213,9 +217,13 @@ class CaelusController:
         self.active_notes[note] = worker_ip
         self.workers[worker_ip].active_notes.add(note)
         
-        # Send note on OSC message to worker
-        self.workers[worker_ip].osc_client.send_note_on(note, velocity, self.rtp_port)
-        logger.info(f"Assigned note {note} to worker {worker_ip}")
+        # Send note on OSC message to worker with specific RTP port for this note
+        # Use a different RTP port for each note to avoid conflicts
+        note_port = self.rtp_port + (note % 10)  # Spread across 10 ports
+        
+        # Send the note message
+        self.workers[worker_ip].osc_client.send_note_on(note, velocity, note_port)
+        logger.info(f"Assigned note {note} to worker {worker_ip} (port {note_port})")
     
     def _handle_note_off(self, note):
         """Handle note off MIDI message.
@@ -258,10 +266,21 @@ class CaelusController:
     
     def start(self):
         """Start the controller."""
+        # Create and set up RTP receiver
+        self.rtp_receiver = RTPReceiver()
+        
         # Set up RTP receiver
-        if not self.rtp_receiver.setup(self.rtp_port):
-            logger.error("Failed to set up RTP receiver")
-            return False
+        if self.offline_mode:
+            logger.info("Starting in offline mode (no audio output)")
+            # Initialize with offline audio mode
+            if not self.rtp_receiver.setup(self.rtp_port, offline=True):
+                logger.error("Failed to set up RTP receiver in offline mode")
+                return False
+        else:
+            # Try regular audio output
+            if not self.rtp_receiver.setup(self.rtp_port):
+                logger.error("Failed to set up RTP receiver")
+                return False
         
         # Start OSC server
         self.osc_server.start()
@@ -297,32 +316,52 @@ class CaelusController:
     
     def test_notes(self):
         """Send test notes."""
-        # C major chord
-        notes = [60, 64, 67]  # C, E, G
+        # C major arpeggio
+        notes = [60, 64, 67, 72, 76]  # C, E, G, C', E'
         
+        # Play ascending arpeggio
         for note in notes:
             # Note on
             self._handle_note_on(note, 100)
             
-            # Wait for a bit
-            time.sleep(1.0)
+            # Wait for the note to sound
+            time.sleep(0.3)
             
             # Note off
             self._handle_note_off(note)
             
-            # Wait between notes
-            time.sleep(0.5)
+            # Small gap between notes
+            time.sleep(0.1)
         
-        # C major chord (all at once)
-        for note in notes:
+        # Play descending arpeggio
+        for note in reversed(notes):
+            # Note on
             self._handle_note_on(note, 100)
-        
-        # Wait for the chord to play
-        time.sleep(2.0)
-        
-        # Note off for all notes
-        for note in notes:
+            
+            # Wait for the note to sound
+            time.sleep(0.3)
+            
+            # Note off
             self._handle_note_off(note)
+            
+            # Small gap between notes
+            time.sleep(0.1)
+        
+        # Play triad chord
+        triad = [60, 64, 67]  # C, E, G
+        
+        # Send notes one at a time with small timing differences
+        for i, note in enumerate(triad):
+            self._handle_note_on(note, 100)
+            time.sleep(0.05)  # Small delay between notes
+        
+        # Let the chord ring
+        time.sleep(1.0)
+        
+        # Note off for all notes in reverse order
+        for note in reversed(triad):
+            self._handle_note_off(note)
+            time.sleep(0.05)
         
         logger.info("Test notes completed")
 
