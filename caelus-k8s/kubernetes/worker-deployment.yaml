@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caelus-worker
+  labels:
+    app: caelus
+    component: worker
+spec:
+  replicas: 8  # Number of worker pods for polyphony
+  selector:
+    matchLabels:
+      app: caelus
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: caelus
+        component: worker
+    spec:
+      containers:
+      - name: worker
+        image: caelus-worker:latest  # Replace with your Docker image
+        imagePullPolicy: IfNotPresent
+        command: ["./caelus", "worker"]
+        args:
+          - "--ip=0.0.0.0"
+          - "--port=9000"
+          - "--sr=44100"
+          - "--polyphony=1"  # Each worker handles 1 note
+        ports:
+        - containerPort: 9000
+          name: osc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: caelus-worker
+  labels:
+    app: caelus
+    component: worker
+spec:
+  selector:
+    app: caelus
+    component: worker
+  clusterIP: None  # Headless service for direct pod access
+  ports:
+  - port: 9000
+    targetPort: osc
+    name: osc

@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caelus-controller
+  labels:
+    app: caelus
+    component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caelus
+      component: controller
+  template:
+    metadata:
+      labels:
+        app: caelus
+        component: controller
+    spec:
+      containers:
+      - name: controller
+        image: caelus-controller:latest  # Replace with your Docker image
+        imagePullPolicy: IfNotPresent
+        command: ["./caelus", "controller"]
+        args:
+          - "--rtp-port=5000"
+          - "--worker-ip=caelus-worker"  # Service DNS name for workers
+          - "--worker-port=9000"
+        ports:
+        - containerPort: 8000
+          name: osc
+        - containerPort: 5000
+          name: rtp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: caelus-controller
+  labels:
+    app: caelus
+    component: controller
+spec:
+  selector:
+    app: caelus
+    component: controller
+  type: NodePort  # Use NodePort to expose the service
+  ports:
+  - port: 8000
+    targetPort: osc
+    name: osc
+    nodePort: 30800  # Optional: specify a static node port
+  - port: 5000
+    targetPort: rtp
+    name: rtp
+    nodePort: 30500  # Optional: specify a static node port
