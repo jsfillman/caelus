@@ -244,6 +244,13 @@ class CaelusController:
             
             # Remove note from active notes
             del self.active_notes[note]
+            
+            # Controller just needs to send note off to worker
+            # Let the worker handle the actual note lifecycle and audio generation
+            # This is a cleaner separation of concerns
+            
+            # Log the action for debugging
+            logger.info(f"Note-off sent to worker {worker_ip} for note {note}")
         else:
             logger.warning(f"Note off for inactive note: {note}")
     

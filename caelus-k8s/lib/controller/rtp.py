@@ -198,26 +198,28 @@ class RTPReceiver:
                 if port is not None and self.base_port is not None:
                     note_offset = port - self.base_port
                 
-                # Create a unique tone ID
-                tone_id = f"{ssrc}_{note_offset}_{timestamp % 1000}"
+                # Extract MIDI note information from port
+                midi_note = None
                 
+                # If port information is available, use it to estimate MIDI note
+                if port is not None and self.base_port is not None:
+                    # Calculate MIDI note from port offset (e.g., port 5001 = note 60+1)
+                    port_offset = port - self.base_port
+                    if 0 <= port_offset < 10:  # Sanity check
+                        # Map port offset 0-9 to notes
+                        note_base = 60  # Middle C
+                        midi_note = note_base + port_offset
+                
+                # If no MIDI note from port, try to estimate from audio
+                if midi_note is None:
+                    midi_note = self._extract_midi_note(audio_data)
+                    
+                # Create a stable tone ID based on port offset and midi note
+                # This makes it easier to track and stop specific notes
+                tone_id = f"{port_offset}_{midi_note}"
+                
+                # Check if we already have this tone playing
                 if tone_id not in self.tone_generators:
-                    # Try to extract the actual note being played
-                    midi_note = None
-                    
-                    # If port information is available, use it to estimate MIDI note
-                    if port is not None and self.base_port is not None:
-                        # Calculate MIDI note from port offset (e.g., port 5001 = note 60+1)
-                        port_offset = port - self.base_port
-                        if 0 <= port_offset < 10:  # Sanity check
-                            # Map port offset 0-9 to notes
-                            note_base = 60  # Middle C
-                            midi_note = note_base + port_offset
-                    
-                    # If no MIDI note from port, try to estimate from audio
-                    if midi_note is None:
-                        midi_note = self._extract_midi_note(audio_data)
-                    
                     # Generate frequency from the MIDI note
                     frequency = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
                     
@@ -227,11 +229,33 @@ class RTPReceiver:
                     elif frequency > 1046.5:  # C6
                         frequency = 523.25  # C5
                     
+                        # Get the current time to make sure this tone doesn't play too long
+                    current_time = time.time()
+                    
                     # Create a sine oscillator for playback
                     amp = float(np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0.3)
                     
-                    # Create the sine oscillator and play it
-                    self.tone_generators[tone_id] = Sine(freq=float(frequency), mul=amp).out()
+                    # Create the sine oscillator and play it, with timer for automatic stop
+                    sine = Sine(freq=float(frequency), mul=amp).out()
+                    self.tone_generators[tone_id] = {
+                        "generator": sine,
+                        "start_time": current_time,
+                        "midi_note": midi_note
+                    }
+                    
+                    # Start a thread to automatically stop this tone after max 0.5 seconds
+                    def auto_stop_tone():
+                        # Sleep for max duration
+                        time.sleep(0.5)
+                        # Force stop if still active
+                        if tone_id in self.tone_generators:
+                            logger.info(f"Auto-stopping tone {tone_id} after timeout")
+                            self._stop_tone(tone_id)
+                    
+                    # Create and start the auto-stop thread
+                    t = threading.Thread(target=auto_stop_tone)
+                    t.daemon = True
+                    t.start()
                     
                     logger.info(f"Playing audio from worker {worker_id} on port {port} (note: {midi_note}, freq: {frequency:.1f} Hz, id: {tone_id})")
                 
@@ -252,28 +276,17 @@ class RTPReceiver:
         """
         if tone_id in self.tone_generators:
             try:
-                # Apply a smoother fade out
-                # Create a fade out over 100ms
-                fade = Fader(fadein=0.0, fadeout=0.1, dur=0.1, mul=self.tone_generators[tone_id].mul)
-                self.tone_generators[tone_id].mul = fade
+                logger.info(f"Stopping tone ID {tone_id}")
+                # Force immediate stop instead of fading
+                # This ensures tones stop reliably
+                try:
+                    self.tone_generators[tone_id].stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping tone generator: {e}")
                 
-                # Schedule removal after the fade completes
-                def _remove_after_fade():
-                    time.sleep(0.15)  # Wait a bit longer than the fade
-                    if tone_id in self.tone_generators:
-                        # First stop the generators
-                        try:
-                            self.tone_generators[tone_id].stop()
-                        except:
-                            pass
-                        # Then remove from the dictionary
-                        del self.tone_generators[tone_id]
-                
-                # Start the removal thread
-                t = threading.Thread(target=_remove_after_fade)
-                t.daemon = True
-                t.start()
-                logger.debug(f"Stopped tone ID {tone_id}")
+                # Remove from dictionary immediately
+                del self.tone_generators[tone_id]
+                logger.info(f"Tone ID {tone_id} stopped and removed")
             except Exception as e:
                 logger.error(f"Error stopping tone: {e}")
     

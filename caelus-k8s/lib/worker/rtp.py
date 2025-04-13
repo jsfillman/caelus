@@ -39,6 +39,9 @@ class RTPSender:
         self.streaming_thread = None
         self.streaming = False
         
+        # Track current streaming note - very important for stopping specific notes
+        self.current_streaming_note = None
+        
         logger.info("RTP sender initialized")
     
     def setup(self, ip, port):
@@ -150,16 +153,20 @@ class RTPSender:
             logger.error(f"Error streaming buffer: {e}")
             return False
     
-    def stream_buffer_chunked(self, buffer, chunk_size=1024, chunk_interval=0.020):
+    def stream_buffer_chunked(self, buffer, chunk_size=1024, chunk_interval=0.020, note=None):
         """Stream a buffer in chunks for continuous playback.
         
         Args:
             buffer (numpy.ndarray): Audio buffer to stream
             chunk_size (int): Samples per chunk
             chunk_interval (float): Time between chunks in seconds
+            note (int, optional): MIDI note number being played, used to stop specific notes
         """
         # Stop any existing streaming
         self.stop_streaming()
+        
+        # Track which note we're currently streaming
+        self.current_streaming_note = note
         
         # Start new streaming thread
         self.streaming = True
@@ -170,7 +177,7 @@ class RTPSender:
         self.streaming_thread.daemon = True
         self.streaming_thread.start()
         
-        logger.info(f"Started chunked streaming of {len(buffer)/self.sr:.2f}s audio")
+        logger.info(f"Started chunked streaming of note {note if note else 'unknown'} ({len(buffer)/self.sr:.2f}s audio)")
         return True
     
     def _streaming_thread_func(self, buffer, chunk_size, chunk_interval):
@@ -232,13 +239,26 @@ class RTPSender:
             self.streaming = False
             self.streaming_thread = None
     
-    def stop_streaming(self):
-        """Stop chunked streaming."""
+    def stop_streaming(self, note=None):
+        """Stop chunked streaming.
+        
+        Args:
+            note (int, optional): If provided, only stop streaming for this specific note
+        """
+        # If note is specified, only stop if it matches current streaming note
+        if note is not None and self.current_streaming_note != note:
+            logger.info(f"Not stopping streaming for note {note} - current streaming note is {self.current_streaming_note}")
+            return
+            
         if self.streaming:
+            logger.info(f"Stopping chunked streaming for note {self.current_streaming_note}")
             self.streaming = False
             if self.streaming_thread:
                 self.streaming_thread.join(timeout=1.0)
                 self.streaming_thread = None
+            
+            # Clear current streaming note
+            self.current_streaming_note = None
             logger.info("Stopped chunked streaming")
     
     def close(self):

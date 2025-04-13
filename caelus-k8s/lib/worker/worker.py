@@ -140,11 +140,13 @@ class CaelusWorker:
                 # Set up RTP stream to controller if needed
                 self.rtp_sender.setup(controller_ip, rtp_port)
                 
-                # First, ensure any ongoing continuous streaming is stopped
-                self.rtp_sender.stop_streaming()
-                logger.info(f"Stopped any ongoing streaming for note {note}")
+                # First, ensure any ongoing streaming for THIS NOTE is stopped
+                # This is critical - only stop streaming for this specific note!
+                self.rtp_sender.stop_streaming(note)
+                logger.info(f"Stopped streaming specifically for note {note}")
                 
-                # Then, if there's a release buffer, stream it
+                # Then, if there's a release buffer, stream it without starting a thread
+                # Use direct streaming for release buffer to ensure it's sent immediately
                 if release_buffer is not None:
                     logger.info(f"Streaming release buffer for note {note}")
                     result = self.rtp_sender.stream_buffer(release_buffer)
@@ -217,10 +219,12 @@ class CaelusWorker:
                     chunk_interval = 0.05  # 50ms between chunks, for ~20 packets per second
                     
                     # Use chunked streaming for better playback
+                    # Pass the note number so we can track which note is being played
                     self.rtp_sender.stream_buffer_chunked(
                         audio_buffer, 
                         chunk_size=chunk_size,
-                        chunk_interval=chunk_interval
+                        chunk_interval=chunk_interval,
+                        note=note  # Pass the note ID so we can stop specific notes later
                     )
                 else:
                     # Sleep a bit if no work to do
