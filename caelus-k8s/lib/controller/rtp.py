@@ -9,6 +9,7 @@ import numpy as np
 import socket
 import struct
 import threading
+import queue
 from pyo import *
 
 # Configure logging
@@ -40,10 +41,16 @@ class RTPReceiver:
         # Audio processing
         self.server = None
         self.mixer = None
-        self.audio_buffers = {}  # ssrc -> numpy buffer queue
         
-        # RTP processing
+        # RTP jitter buffers (one per worker/SSRC)
+        self.jitter_buffers = {}  # ssrc -> queue
+        self.jitter_buffer_size = 3  # Number of packets to buffer
+        
+        # Last sequence numbers
         self.last_sequence = {}  # ssrc -> last sequence number
+        
+        # Active tone generators (for playback)
+        self.tone_generators = {}  # ssrc -> pyo object
         
         logger.info("RTP receiver initialized")
     
@@ -93,6 +100,43 @@ class RTPReceiver:
         
         return (ssrc, sequence_number, timestamp, payload)
     
+    def _extract_midi_note(self, data):
+        """Extract MIDI note from audio data.
+        
+        This is a simple heuristic function that tries to guess the MIDI note
+        from the frequency content of the audio. For the MVP, it's simplified.
+        
+        Args:
+            data (numpy.ndarray): Audio data
+            
+        Returns:
+            int: Approximate MIDI note number
+        """
+        # Simple zero-crossing method for frequency estimation
+        if len(data) < 100:
+            return 60  # Default to middle C
+            
+        # Find zero crossings
+        zero_crossings = np.where(np.diff(np.signbit(data)))[0]
+        if len(zero_crossings) < 2:
+            return 60
+            
+        # Calculate average period
+        periods = np.diff(zero_crossings)
+        avg_period = np.mean(periods) * 2  # Multiply by 2 for full period
+        
+        # Calculate frequency
+        frequency = self.sr / avg_period if avg_period > 0 else 440
+        
+        # Convert to MIDI note
+        if frequency <= 0:
+            return 60
+            
+        midi_note = int(69 + 12 * np.log2(frequency / 440.0))
+        
+        # Clamp to valid MIDI range
+        return max(0, min(127, midi_note))
+    
     def _process_audio_packet(self, ssrc, sequence_number, timestamp, payload):
         """Process an audio packet.
         
@@ -102,29 +146,63 @@ class RTPReceiver:
             timestamp (int): RTP timestamp
             payload (bytes): Audio payload
         """
-        # Convert PCM bytes to numpy array
-        audio_data = np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32767.0
-        
-        # Store in buffer for mixing/playback (simplified for MVP)
-        worker_id = ssrc  # For the MVP, we'll use SSRC as worker ID
-        
-        # At this point, in a real implementation we would:
-        # 1. Add the audio to a jitter buffer for the worker
-        # 2. Check sequence numbers for packet loss
-        # 3. Use timestamps for proper alignment
-        # 4. Mix multiple worker streams
-        
-        # For the MVP, we'll just log that we received audio
-        logger.info(f"Received {len(audio_data)/self.sr:.3f}s audio from worker {worker_id}")
-        
-        # Play the audio in real-time using pyo (if the server is running)
-        if self.server is not None and self.server.getIsStarted():
-            # For MVP we'll just generate a sine with the same pitch
-            # In a real implementation, we would use the actual received audio
-            middle_c_freq = 261.63
-            s = Sine(freq=middle_c_freq, mul=0.3).out()
+        try:
+            # Convert PCM bytes to numpy array
+            audio_data = np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32767.0
             
-            logger.info(f"Playing audio from worker {worker_id}")
+            # Check for sequence number discontinuity (packet loss)
+            if ssrc in self.last_sequence:
+                expected_seq = (self.last_sequence[ssrc] + 1) & 0xFFFF
+                if sequence_number != expected_seq:
+                    gap = (sequence_number - expected_seq) & 0xFFFF
+                    if gap < 1000:  # Sanity check
+                        logger.warning(f"Packet loss detected for SSRC {ssrc}: {gap} packets")
+            
+            # Update last sequence number
+            self.last_sequence[ssrc] = sequence_number
+            
+            worker_id = ssrc  # For the MVP, we'll use SSRC as worker ID
+            
+            # Get or create jitter buffer for this SSRC
+            if ssrc not in self.jitter_buffers:
+                self.jitter_buffers[ssrc] = queue.Queue(maxsize=self.jitter_buffer_size * 2)
+            
+            # Add to jitter buffer (if not full)
+            try:
+                self.jitter_buffers[ssrc].put_nowait((timestamp, audio_data))
+                logger.debug(f"Added packet to jitter buffer for worker {worker_id}")
+            except queue.Full:
+                logger.warning(f"Jitter buffer full for worker {worker_id}, dropping packet")
+            
+            # Play audio if server is running
+            if self.server is not None and self.server.getIsStarted():
+                if ssrc not in self.tone_generators:
+                    # Try to estimate the note frequency
+                    midi_note = self._extract_midi_note(audio_data)
+                    frequency = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
+                    
+                    # Create a sine oscillator for playback
+                    amp = np.max(np.abs(audio_data)) if len(audio_data) > 0 else 0.3
+                    self.tone_generators[ssrc] = Sine(freq=frequency, mul=amp).out()
+                    logger.info(f"Playing audio from worker {worker_id} (note: {midi_note}, freq: {frequency:.1f} Hz)")
+        except Exception as e:
+            logger.error(f"Error processing audio packet: {e}")
+    
+    def _stop_tone(self, ssrc):
+        """Stop a tone generator.
+        
+        Args:
+            ssrc (int): Synchronization source
+        """
+        if ssrc in self.tone_generators:
+            try:
+                # Apply a short fade out
+                self.tone_generators[ssrc].mul = 0
+                # Remove from active tones
+                del self.tone_generators[ssrc]
+                logger.debug(f"Stopped tone for SSRC {ssrc}")
+            except Exception as e:
+                logger.error(f"Error stopping tone: {e}")
     
     def _receive_thread_func(self):
         """Thread function for receiving RTP packets."""
@@ -171,10 +249,15 @@ class RTPReceiver:
             
             # Initialize Pyo server for audio output
             self.server = Server(sr=self.sr, nchnls=self.nchnls, 
-                              buffersize=self.buffer_size, duplex=1)
+                              buffersize=self.buffer_size, duplex=0)
             self.server.setVerbosity(1)
+            self.server.setOutputDevice(0)  # Use default output device
             self.server.boot()
             self.server.start()
+            
+            # Create a master mixer
+            self.mixer = Mixer(outs=self.nchnls, chnls=16)  # Support up to 16 input channels
+            self.mixer.out()
             
             logger.info(f"RTP receiver set up on port {port}")
             return True
@@ -186,6 +269,10 @@ class RTPReceiver:
     
     def stop(self):
         """Stop the RTP receiver."""
+        # Stop all tone generators
+        for ssrc in list(self.tone_generators.keys()):
+            self._stop_tone(ssrc)
+        
         # Stop receive thread
         self.running = False
         if self.receive_thread:

@@ -31,9 +31,14 @@ class RTPSender:
         self.socket = None
         self.target_ip = None
         self.target_port = None
-        self.sequence_number = 0
-        self.timestamp = 0
+        self.sequence_number = random.randint(0, 0xFFFF)  # Random start sequence
+        self.timestamp_offset = random.randint(0, 0xFFFFFFFF)  # Random timestamp offset
         self.ssrc = random.randint(0, 0xFFFFFFFF)  # Random synchronization source
+        
+        # For streaming longer audio in chunks
+        self.streaming_thread = None
+        self.streaming = False
+        
         logger.info("RTP sender initialized")
     
     def setup(self, ip, port):
@@ -56,12 +61,12 @@ class RTPSender:
         logger.info(f"RTP stream setup for {ip}:{port}")
         return True
     
-    def _create_rtp_packet(self, payload, timestamp):
+    def _create_rtp_packet(self, payload, timestamp=None):
         """Create an RTP packet.
         
         Args:
             payload (bytes): Audio payload
-            timestamp (int): RTP timestamp
+            timestamp (int, optional): RTP timestamp
             
         Returns:
             bytes: RTP packet
@@ -89,6 +94,12 @@ class RTPSender:
         
         # Increment sequence number for each packet
         self.sequence_number = (self.sequence_number + 1) & 0xFFFF
+        
+        # Use provided timestamp or generate one based on sample rate
+        if timestamp is None:
+            # Convert to timestamp units (samples since start)
+            current_time = int(time.time() * self.sr)
+            timestamp = (current_time + self.timestamp_offset) & 0xFFFFFFFF
         
         # Create header
         header = struct.pack(
@@ -121,22 +132,112 @@ class RTPSender:
             payload = pcm_data.tobytes()
             
             # Create RTP packet
-            timestamp = int(time.time() * self.sr)  # Sample-based timestamp
-            packet = self._create_rtp_packet(payload, timestamp)
+            packet = self._create_rtp_packet(payload)
             
             # Send packet
             self.socket.sendto(packet, (self.target_ip, self.target_port))
             
             duration = len(buffer) / self.sr
-            logger.info(f"Streamed {duration:.2f}s buffer to {self.target_ip}:{self.target_port}")
+            logger.info(f"Streamed {duration:.2f}s buffer ({len(payload)} bytes) to {self.target_ip}:{self.target_port}")
             return True
         
         except Exception as e:
             logger.error(f"Error streaming buffer: {e}")
             return False
+    
+    def stream_buffer_chunked(self, buffer, chunk_size=1024, chunk_interval=0.020):
+        """Stream a buffer in chunks for continuous playback.
         
+        Args:
+            buffer (numpy.ndarray): Audio buffer to stream
+            chunk_size (int): Samples per chunk
+            chunk_interval (float): Time between chunks in seconds
+        """
+        # Stop any existing streaming
+        self.stop_streaming()
+        
+        # Start new streaming thread
+        self.streaming = True
+        self.streaming_thread = threading.Thread(
+            target=self._streaming_thread_func,
+            args=(buffer, chunk_size, chunk_interval)
+        )
+        self.streaming_thread.daemon = True
+        self.streaming_thread.start()
+        
+        logger.info(f"Started chunked streaming of {len(buffer)/self.sr:.2f}s audio")
+        return True
+    
+    def _streaming_thread_func(self, buffer, chunk_size, chunk_interval):
+        """Thread function for chunked streaming.
+        
+        Args:
+            buffer (numpy.ndarray): Audio buffer to stream
+            chunk_size (int): Samples per chunk
+            chunk_interval (float): Time between chunks in seconds
+        """
+        try:
+            # Calculate number of chunks
+            num_chunks = (len(buffer) + chunk_size - 1) // chunk_size
+            
+            # Calculate timestamp increment per chunk
+            timestamp_increment = int(chunk_size)
+            base_timestamp = int(time.time() * self.sr)
+            
+            logger.info(f"Streaming {num_chunks} chunks, {chunk_interval*1000:.1f}ms apart")
+            
+            # Stream each chunk
+            for i in range(num_chunks):
+                if not self.streaming:
+                    logger.info("Streaming stopped")
+                    break
+                    
+                # Extract chunk
+                start = i * chunk_size
+                end = min(start + chunk_size, len(buffer))
+                chunk = buffer[start:end]
+                
+                # If last chunk is smaller, pad with zeros
+                if len(chunk) < chunk_size:
+                    chunk = np.pad(chunk, (0, chunk_size - len(chunk)), 'constant')
+                
+                # Convert to PCM and create packet
+                pcm_data = (chunk * 32767).astype(np.int16)
+                payload = pcm_data.tobytes()
+                
+                # Calculate timestamp for this chunk
+                timestamp = (base_timestamp + i * timestamp_increment) & 0xFFFFFFFF
+                
+                # Create and send packet
+                packet = self._create_rtp_packet(payload, timestamp)
+                self.socket.sendto(packet, (self.target_ip, self.target_port))
+                
+                # Wait for next chunk
+                time.sleep(chunk_interval)
+            
+            logger.info(f"Finished streaming {num_chunks} chunks")
+            
+        except Exception as e:
+            logger.error(f"Error in streaming thread: {e}")
+        finally:
+            self.streaming = False
+            self.streaming_thread = None
+    
+    def stop_streaming(self):
+        """Stop chunked streaming."""
+        if self.streaming:
+            self.streaming = False
+            if self.streaming_thread:
+                self.streaming_thread.join(timeout=1.0)
+                self.streaming_thread = None
+            logger.info("Stopped chunked streaming")
+    
     def close(self):
         """Close the RTP stream."""
+        # Stop streaming
+        self.stop_streaming()
+        
+        # Close socket
         if self.socket:
             self.socket.close()
             self.socket = None

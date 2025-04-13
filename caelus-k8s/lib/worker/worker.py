@@ -7,6 +7,7 @@ import logging
 import argparse
 import time
 import threading
+import numpy as np
 from pythonosc import dispatcher
 
 from lib.common.osc import OSCServer, NOTE_ON, NOTE_OFF, WORKER_READY, WORKER_STATUS
@@ -176,11 +177,25 @@ class CaelusWorker:
                     # Set up RTP stream to controller
                     self.rtp_sender.setup(controller_ip, rtp_port)
                     
-                    # Generate audio
-                    audio_buffer = self.oscillator.start_note(note, velocity)
+                    # Generate audio - use longer buffer for sustained note
+                    duration = 1.0  # 1 second of audio
+                    frequency = self.oscillator.note_to_freq(note)
+                    amplitude = velocity / 127.0
                     
-                    # Stream audio over RTP
-                    self.rtp_sender.stream_buffer(audio_buffer)
+                    # Generate continuous tone - 1 second of sine wave audio
+                    t = np.linspace(0, duration, int(self.sample_rate * duration), False)
+                    audio_buffer = amplitude * np.sin(2 * np.pi * frequency * t)
+                    
+                    # Stream audio in chunks for better playback
+                    chunk_size = 1024
+                    chunk_interval = 0.02  # 20ms between chunks, for ~50 packets per second
+                    
+                    # Use chunked streaming for better playback
+                    self.rtp_sender.stream_buffer_chunked(
+                        audio_buffer, 
+                        chunk_size=chunk_size,
+                        chunk_interval=chunk_interval
+                    )
                 else:
                     # Sleep a bit if no work to do
                     time.sleep(0.01)
