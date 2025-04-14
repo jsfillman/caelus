@@ -63,7 +63,8 @@ class SineOscillator:
         self.active_notes[note] = (freq, amp)
         
         # Generate a simple sine wave using numpy
-        duration = 0.2  # 200ms buffer
+        # Use very short buffer for lower latency
+        duration = 0.05  # 50ms buffer for lower latency 
         t = np.linspace(0, duration, int(self.sr * duration), False)
         audio_data = amp * np.sin(2 * np.pi * freq * t)
         
@@ -87,13 +88,13 @@ class SineOscillator:
             # Remove note from active notes
             del self.active_notes[note]
             
-            # Create a release envelope - fade out over 100ms
-            duration = 0.1  # 100ms (increased from 50ms)
+            # Create a shorter release envelope - fade out over 30ms for lower latency
+            duration = 0.03  # 30ms (much shorter for lower latency)
             samples = int(self.sr * duration)
             
-            # Exponential fade out (more natural sounding)
-            # Using curve that starts at 1.0 and ends at ~0
-            envelope = np.exp(-np.linspace(0, 5, samples)) * amp
+            # Fast linear fade out (simpler and shorter)
+            # Using simple ramp from 1.0 to 0.0
+            envelope = np.linspace(1.0, 0.0, samples) * amp
             t = np.linspace(0, duration, samples, False)
             release_buffer = envelope * np.sin(2 * np.pi * freq * t)
             

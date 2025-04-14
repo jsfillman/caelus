@@ -44,15 +44,22 @@ class WorkerConfig:
 class CaelusController:
     """Caelus K8s controller that routes MIDI to workers via OSC."""
     
-    def __init__(self, rtp_port=5000, offline_mode=False):
+    def __init__(self, rtp_port=5000, offline_mode=False, sr=44100, 
+                 jack_client_name="caelus_controller", use_jack=True):
         """Initialize the controller.
         
         Args:
-            rtp_port (int): Port to listen on for RTP
+            rtp_port (int): Port to listen on for RTP/socket audio
             offline_mode (bool): If True, don't try to use audio output
+            sr (int): Sample rate for audio processing
+            jack_client_name (str): Name for Jack client
+            use_jack (bool): Whether to use Jack for audio I/O
         """
         self.offline_mode = offline_mode
         self.rtp_port = rtp_port
+        self.sample_rate = sr  # Store sample rate to ensure consistency
+        self.jack_client_name = jack_client_name
+        self.use_jack = use_jack
         
         # Create worker registry
         self.workers = {}  # ip -> WorkerConfig
@@ -160,6 +167,9 @@ class CaelusController:
         Args:
             message (mido.Message): MIDI message
         """
+        # Debug print to see what messages we're receiving
+        logger.info(f"MIDI message received: {message}")
+        
         if message.type == 'note_on' and message.velocity > 0:
             self._handle_note_on(message.note, message.velocity)
         elif message.type == 'note_off' or (message.type == 'note_on' and message.velocity == 0):
@@ -217,13 +227,13 @@ class CaelusController:
         self.active_notes[note] = worker_ip
         self.workers[worker_ip].active_notes.add(note)
         
-        # Send note on OSC message to worker with specific RTP port for this note
-        # Use a different RTP port for each note to avoid conflicts
-        note_port = self.rtp_port + (note % 10)  # Spread across 10 ports
+        # Each worker gets one RTP port - the base port
+        # This ensures monophonic playback per worker
+        worker_port = self.rtp_port
         
         # Send the note message
-        self.workers[worker_ip].osc_client.send_note_on(note, velocity, note_port)
-        logger.info(f"Assigned note {note} to worker {worker_ip} (port {note_port})")
+        self.workers[worker_ip].osc_client.send_note_on(note, velocity, worker_port)
+        logger.info(f"Assigned note {note} to worker {worker_ip} (port {worker_port})")
     
     def _handle_note_off(self, note):
         """Handle note off MIDI message.
@@ -273,27 +283,27 @@ class CaelusController:
     
     def start(self):
         """Start the controller."""
-        # Create and set up RTP receiver
-        self.rtp_receiver = RTPReceiver()
+        # Create and set up RTP/audio receiver
+        self.rtp_receiver = RTPReceiver(sr=self.sample_rate, jack_client_name=self.jack_client_name)
         
-        # Set up RTP receiver
+        # Set up audio receiver
         if self.offline_mode:
             logger.info("Starting in offline mode (no audio output)")
             # Initialize with offline audio mode
-            if not self.rtp_receiver.setup(self.rtp_port, offline=True):
-                logger.error("Failed to set up RTP receiver in offline mode")
+            if not self.rtp_receiver.setup(self.rtp_port, offline=True, use_jack=False):
+                logger.error("Failed to set up audio receiver in offline mode")
                 return False
         else:
-            # Try regular audio output
-            if not self.rtp_receiver.setup(self.rtp_port):
-                logger.error("Failed to set up RTP receiver")
+            # Try regular audio output with Jack if enabled
+            if not self.rtp_receiver.setup(self.rtp_port, offline=False, use_jack=self.use_jack):
+                logger.error("Failed to set up audio receiver")
                 return False
         
         # Start OSC server
         self.osc_server.start()
         
         # Try to open a MIDI port
-        if not self.midi_handler.open_port():
+        if not self.midi_handler.open_port(interactive=midi_select_flag):
             # If no physical MIDI ports available, open a virtual port
             logger.warning("No physical MIDI ports available, opening virtual port")
             if not self.midi_handler.open_virtual_port():
@@ -372,18 +382,35 @@ class CaelusController:
         
         logger.info("Test notes completed")
 
+# Global variable to store command line arguments
+midi_select_flag = False
+
 def main():
     """Main entry point."""
+    global midi_select_flag
+    
     parser = argparse.ArgumentParser(description="Caelus K8s Controller")
     parser.add_argument("--rtp-port", type=int, default=5000, help="Port to listen on for RTP")
     parser.add_argument("--worker-ip", default=None, help="IP address of the worker")
     parser.add_argument("--worker-port", type=int, default=9000, help="OSC port of the worker")
     parser.add_argument("--test", action="store_true", help="Send test notes")
     parser.add_argument("--offline", action="store_true", help="Run in offline mode (disable audio reception/playback)")
+    parser.add_argument("--select-midi", action="store_true", help="Interactively select MIDI input device")
+    parser.add_argument("--no-jack", action="store_true", help="Disable Jack audio (use socket mode)")
+    parser.add_argument("--jack-client-name", default="caelus_controller", help="Jack client name")
     
     args = parser.parse_args()
     
-    controller = CaelusController(args.rtp_port, offline_mode=args.offline)
+    # Store MIDI selection flag globally
+    midi_select_flag = args.select_midi
+    
+    # Create controller with appropriate settings
+    controller = CaelusController(
+        rtp_port=args.rtp_port, 
+        offline_mode=args.offline,
+        jack_client_name=args.jack_client_name,
+        use_jack=not args.no_jack
+    )
     
     # Add worker if specified
     if args.worker_ip:

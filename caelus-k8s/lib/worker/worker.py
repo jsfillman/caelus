@@ -7,6 +7,7 @@ import logging
 import argparse
 import time
 import threading
+import random
 import numpy as np
 from pythonosc import dispatcher
 
@@ -24,7 +25,9 @@ logger = logging.getLogger(__name__)
 class CaelusWorker:
     """Caelus K8s worker that generates notes based on OSC messages."""
     
-    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=8, local_audio=False):
+    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=8, 
+                 local_audio=False, use_pyo=False, jack_client_name="caelus_worker",
+                 jack_connect_to=None):
         """Initialize the worker.
         
         Args:
@@ -33,9 +36,15 @@ class CaelusWorker:
             sample_rate (int): Audio sample rate
             max_polyphony (int): Maximum number of simultaneous notes
             local_audio (bool): If True, play audio locally instead of streaming
+            use_pyo (bool): If True, use Pyo for direct audio (legacy mode)
+            jack_client_name (str): Name to use for Jack client
+            jack_connect_to (str): Jack port to connect to (optional)
         """
         self.osc_ip = osc_ip
         self.osc_port = osc_port
+        self.use_pyo = use_pyo
+        self.jack_client_name = jack_client_name
+        self.jack_connect_to = jack_connect_to
         self.sample_rate = sample_rate
         self.max_polyphony = max_polyphony
         self.local_audio = local_audio
@@ -92,7 +101,7 @@ class CaelusWorker:
             # In a real implementation, this would come from the OSC packet
             controller_ip = "127.0.0.1"  
             
-            logger.info(f"Note on: {note}, velocity: {velocity}, RTP port: {rtp_port}")
+            logger.info(f"Worker received NOTE ON: {note}, velocity: {velocity}, RTP port: {rtp_port}")
             
             # Store controller info
             self.controllers[controller_ip] = (rtp_port, time.time())
@@ -157,22 +166,13 @@ class CaelusWorker:
                     
                 release_buffer = self.oscillator.stop_note(note)
                 
-                # Set up RTP stream to controller if needed
-                self.rtp_sender.setup(controller_ip, rtp_port)
-                
-                # First, ensure any ongoing streaming for THIS NOTE is stopped
-                # This is critical - only stop streaming for this specific note!
-                self.rtp_sender.stop_streaming(note)
-                logger.info(f"Stopped streaming specifically for note {note}")
-                
-                # Then, if there's a release buffer, stream it without starting a thread
-                # Use direct streaming for release buffer to ensure it's sent immediately
-                if release_buffer is not None:
-                    logger.info(f"Streaming release buffer for note {note}")
-                    result = self.rtp_sender.stream_buffer(release_buffer)
-                    logger.info(f"Result of streaming release buffer: {result}")
-                else:
-                    logger.warning(f"No release buffer generated for note {note}")
+                # For local audio, removing from active_notes is sufficient
+                # The audio thread will immediately stop playing the note
+                # No need to send any data over the network
+                    
+                # Note is now completely released - nothing more to do
+                # Socket connection is persistent and will be reused for the next note
+                logger.info(f"Note {note} fully released")
                 
                 # Remove from active notes
                 del self.active_notes[note]
@@ -224,40 +224,53 @@ class CaelusWorker:
                         logger.info(f"Note {note} already turned off, not rendering")
                         continue
                     
-                    # Generate audio - use shorter buffer for sustained note to reduce load
-                    duration = 0.5  # 0.5 second of audio (reduced from 1.0)
+                    # Generate a simple initial buffer with appropriate envelope
+                    # Use a small buffer size for minimal latency during attack
+                    initial_duration = 0.1  # 100ms buffer for lower latency
                     frequency = self.oscillator.note_to_freq(note)
-                    amplitude = velocity / 127.0
+                    amplitude = velocity / 127.0 * 0.8  # Reduce amplitude slightly to prevent clipping
                     
-                    # Generate continuous tone - sine wave audio
-                    t = np.linspace(0, duration, int(self.sample_rate * duration), False)
-                    audio_buffer = amplitude * np.sin(2 * np.pi * frequency * t)
+                    # Generate continuous tone with an envelope to prevent clicks
+                    t = np.linspace(0, initial_duration, int(self.sample_rate * initial_duration), False)
                     
-                    # If local audio is enabled, play it directly
-                    if self.local_audio:
+                    # Create an envelope to prevent clicks (2ms fade in - very fast attack)
+                    envelope = np.ones_like(t)
+                    fade_samples = int(0.002 * self.sample_rate)  # 2ms - much faster attack
+                    if len(t) > 2 * fade_samples:
+                        # Apply fade in only (no fade out for sustained notes)
+                        envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
+                        # Don't apply fade out for sustained notes
+                    
+                    # Generate a cleaner sine wave with simpler envelope for attack phase
+                    attack_buffer = amplitude * np.sin(2 * np.pi * frequency * t) * envelope
+                    
+                    # Also create a longer sustain buffer that we'll loop
+                    # This ensures sustained notes keep playing
+                    sustain_duration = 0.5  # 500ms of sustained tone
+                    t_sustain = np.linspace(0, sustain_duration, int(self.sample_rate * sustain_duration), False)
+                    sustain_buffer = amplitude * np.sin(2 * np.pi * frequency * t_sustain)
+                    
+                    # Store both buffers for this note
+                    self.note_buffers = getattr(self, 'note_buffers', {})
+                    self.note_buffers[note] = (attack_buffer, sustain_buffer)
+                    
+                    # Use the attack buffer for immediate playback
+                    audio_buffer = attack_buffer
+                    
+                    # Store the note information for the audio thread
+                    # The audio thread will pick this up and start playing the note
+                    logger.info(f"Note {note} activated: freq={frequency:.2f}Hz, amp={amplitude:.2f}")
+                    
+                    # If using local audio, Pyo direct method is left in place for compatibility
+                    if self.local_audio and self.use_pyo:
                         from pyo import Sine
-                        # Create a sine oscillator and play it
+                        # Create a sine oscillator and play it directly with Pyo
                         sine = Sine(freq=float(frequency), mul=amplitude).out()
                         # Store in a dictionary to keep track of active sounds
                         if not hasattr(self, 'active_sounds'):
                             self.active_sounds = {}
                         self.active_sounds[note] = sine
-                        logger.info(f"Playing note {note} locally with frequency {frequency:.2f} Hz")
-                    
-                    # Also stream via RTP as normal
-                    # Stream audio in chunks for better playback
-                    # Using smaller chunks and longer intervals to prevent controller buffer overflow
-                    chunk_size = 512  # Smaller chunks
-                    chunk_interval = 0.05  # 50ms between chunks, for ~20 packets per second
-                    
-                    # Use chunked streaming for better playback
-                    # Pass the note number so we can track which note is being played
-                    self.rtp_sender.stream_buffer_chunked(
-                        audio_buffer, 
-                        chunk_size=chunk_size,
-                        chunk_interval=chunk_interval,
-                        note=note  # Pass the note ID so we can stop specific notes later
-                    )
+                        logger.info(f"Playing note {note} directly with Pyo")
                 else:
                     # Sleep a bit if no work to do
                     time.sleep(0.01)
@@ -279,7 +292,11 @@ class CaelusWorker:
             from lib.common.osc import OSCClient, WORKER_READY
             controller_client = OSCClient(controller_ip, controller_port)
             
-            # Send WORKER_READY message with our IP, port, and capacity
+            # For local testing, just use 127.0.0.1 directly
+            my_ip = "127.0.0.1"
+            
+            # Uncomment this for production/networked deployment
+            """
             # Use the machine's actual IP address, not 0.0.0.0
             import socket
             my_ip = socket.gethostbyname(socket.gethostname())
@@ -294,6 +311,7 @@ class CaelusWorker:
                     pass
                 finally:
                     s.close()
+            """
             
             controller_client.client.send_message(WORKER_READY, [my_ip, self.osc_port, self.max_polyphony])
             logger.info(f"Registered with controller at {controller_ip}:{controller_port}")
@@ -322,6 +340,28 @@ class CaelusWorker:
         self.render_thread.daemon = True
         self.render_thread.start()
         
+        # Start Jack audio thread for all audio output (local and networked)
+        self.audio_thread = threading.Thread(target=self._jack_thread_func)
+        self.audio_thread.daemon = True
+        self.audio_thread.start()
+        
+        if self.local_audio:
+            logger.info("Started Jack thread with local audio output")
+        else:
+            logger.info("Started Jack thread with network streaming to controller")
+            
+        # Initialize Pyo server only if use_pyo is specifically enabled (legacy mode)
+        if self.use_pyo:
+            try:
+                from pyo import Server
+                self.audio_server = Server(sr=self.sample_rate, nchnls=2, buffersize=512, duplex=0)
+                self.audio_server.boot()
+                self.audio_server.start()
+                logger.info("Started Pyo audio server (legacy mode)")
+            except Exception as e:
+                logger.error(f"Error starting Pyo audio server: {e}")
+                self.use_pyo = False  # Disable Pyo on error
+        
         # Register with controller if provided
         if controller_ip:
             self.register_with_controller(controller_ip, controller_port)
@@ -336,22 +376,268 @@ class CaelusWorker:
             self.register_thread.daemon = True
             self.register_thread.start()
         
-        logger.info("Worker started")
+        logger.info("Worker started with continuous note sustain enabled")
+    
+    def _jack_thread_func(self):
+        """Thread function for JACK-based audio synthesis and network streaming.
+        
+        Uses JACK for professional audio handling and network streaming to controller.
+        """
+        logger.info("JACK audio synthesis thread started")
+        
+        try:
+            # Import jack client
+            import jack
+            
+            # Audio parameters
+            sample_rate = self.sample_rate
+            buffer_size = 1024  # Use Jack's buffer size
+            jack_client_name = self.jack_client_name
+            
+            # Initialize Jack client
+            try:
+                # Connect to Jack server
+                client = jack.Client(jack_client_name)
+                
+                # Register output port (mono audio output)
+                outport = client.outports.register("output")
+                
+                # Get actual buffer size and sample rate from Jack
+                buffer_size = client.blocksize
+                actual_sr = client.samplerate
+                if actual_sr != sample_rate:
+                    logger.warning(f"Jack sample rate ({actual_sr}) differs from requested ({sample_rate}). Using Jack's rate.")
+                    sample_rate = actual_sr
+                
+                logger.info(f"Connected to Jack server: buffer_size={buffer_size}, sample_rate={sample_rate}")
+                
+                # Define process callback - this is called by Jack when audio is needed
+                # Store phase information between callbacks
+                phase = {}  # note -> current phase
+                
+                @client.set_process_callback
+                def process(frames):
+                    # Get a snapshot of active notes to avoid mid-callback changes
+                    current_active_notes = {}
+                    if hasattr(self, 'active_notes'):
+                        current_active_notes = dict(self.active_notes)
+                    
+                    # Create silent buffer
+                    mixed_buffer = np.zeros(frames, dtype=np.float32)
+                    
+                    # Only process if we have active notes
+                    if current_active_notes:
+                        # Mix in all active notes with phase continuity
+                        for note, (freq, amp) in current_active_notes.items():
+                            # Ensure phase is initialized for this note
+                            if note not in phase:
+                                phase[note] = 0.0
+                            
+                            # Create continuous-phase oscillator
+                            # Calculate phase increment per sample
+                            phase_increment = 2 * np.pi * freq / sample_rate
+                            
+                            # Generate sine wave samples
+                            note_buffer = np.zeros(frames, dtype=np.float32)
+                            for i in range(frames):
+                                note_buffer[i] = amp * np.sin(phase[note])
+                                phase[note] += phase_increment
+                                # Keep phase in sensible range to prevent floating point errors
+                                while phase[note] >= 2 * np.pi:
+                                    phase[note] -= 2 * np.pi
+                            
+                            # Mix with lower gain to prevent clipping
+                            mixed_buffer += note_buffer * 0.2
+                        
+                        # Clean up phases for notes that are no longer active
+                        for note in list(phase.keys()):
+                            if note not in current_active_notes:
+                                del phase[note]
+                    
+                    # Soft limit to prevent hard clipping
+                    # Apply a very gentle compression curve
+                    max_amp = np.max(np.abs(mixed_buffer))
+                    if max_amp > 0.8:
+                        # Apply soft limiter
+                        gain = 0.8 / max_amp
+                        mixed_buffer *= gain
+                    
+                    # Send to Jack output port with proper scaling
+                    outport.get_array()[:] = mixed_buffer
+                
+                # Define shutdown callback
+                @client.set_shutdown_callback
+                def shutdown(status, reason):
+                    logger.warning(f"Jack shut down: {reason}")
+                    self.running = False
+                
+                # Activate client
+                client.activate()
+                
+                # Setup network ports if we're streaming
+                if not self.local_audio or self.jack_connect_to:
+                    try:
+                        # Connect to specified port or auto-detect
+                        import subprocess
+                        
+                        if self.jack_connect_to:
+                            # Connect to user-specified port
+                            logger.info(f"Connecting to specified Jack port: {self.jack_connect_to}")
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output', self.jack_connect_to])
+                            logger.info(f"Connected to port: {self.jack_connect_to}")
+                        else:
+                            # Auto-detect and connect to available ports
+                            logger.info("Auto-detecting Jack network connections...")
+                            # Run command to list available ports
+                            result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
+                            ports = result.stdout.strip().split('\n')
+                            
+                            # Look for netjack ports or controller ports
+                            controller_ports = [p for p in ports if 'controller' in p and 'input' in p]
+                            netjack_ports = [p for p in ports if 'net' in p and 'input' in p]
+                            
+                            if controller_ports:
+                                target_port = controller_ports[0]
+                                subprocess.run(['jack_connect', f'{jack_client_name}:output', target_port])
+                                logger.info(f"Auto-connected to controller port: {target_port}")
+                            elif netjack_ports:
+                                target_port = netjack_ports[0]
+                                subprocess.run(['jack_connect', f'{jack_client_name}:output', target_port])
+                                logger.info(f"Auto-connected to netjack port: {target_port}")
+                            else:
+                                logger.warning("No suitable network or controller ports found. Audio will be generated but not streamed.")
+                                if not self.local_audio:
+                                    logger.info("Consider using --local-audio or specifying a port with --jack-connect-to")
+                    except Exception as e:
+                        logger.error(f"Error setting up Jack connections: {e}")
+                
+                # Log active status
+                logger.info(f"Jack client active with {len(self.active_notes)} notes")
+                
+                # Keep thread alive until shutdown
+                while self.running:
+                    # Log occasionally
+                    if random.random() < 0.001:  # Very rarely to avoid log spam
+                        if hasattr(self, 'active_notes') and self.active_notes:
+                            logger.info(f"Playing {len(self.active_notes)} notes via Jack")
+                    time.sleep(1)
+                
+                # Deactivate and close client
+                client.deactivate()
+                client.close()
+                logger.info("Jack client closed")
+                
+            except jack.JackError as e:
+                logger.error(f"Could not connect to Jack server: {e}")
+                
+                # Fallback to PyAudio if Jack fails and local audio is enabled
+                if self.local_audio:
+                    logger.info("Falling back to PyAudio for local playback")
+                    self._pyaudio_fallback()
+                
+        except ImportError:
+            logger.error("Jack module not available. Install with: pip install JACK-Client")
+            
+            # Fallback to PyAudio if Jack fails and local audio is enabled
+            if self.local_audio:
+                logger.info("Falling back to PyAudio for local playback")
+                self._pyaudio_fallback()
+            
+        logger.info("Jack audio thread stopped")
+    
+    def _pyaudio_fallback(self):
+        """Fallback to PyAudio if Jack is not available."""
+        try:
+            # Initialize PyAudio for direct audio output
+            import pyaudio
+            
+            # Audio parameters
+            sample_rate = self.sample_rate
+            buffer_size = 1024  # Small buffer size for low latency
+            
+            # Create PyAudio instance
+            pa = pyaudio.PyAudio()
+            
+            # Create stream for real-time audio output
+            stream = pa.open(
+                format=pyaudio.paFloat32,
+                channels=1,
+                rate=int(sample_rate),
+                output=True,
+                frames_per_buffer=buffer_size
+            )
+            logger.info(f"Created PyAudio output stream at {sample_rate} Hz")
+            
+            # Main audio loop
+            while self.running:
+                try:
+                    # Generate audio buffer with current active notes
+                    # Mix all active notes into a single buffer
+                    if hasattr(self, 'active_notes') and self.active_notes:
+                        # Create silent buffer
+                        mixed_buffer = np.zeros(buffer_size, dtype=np.float32)
+                        
+                        # Mix in all active notes
+                        for note, (freq, amp) in self.active_notes.items():
+                            # Generate simple sine wave
+                            t = np.linspace(0, buffer_size/sample_rate, buffer_size, False)
+                            note_buffer = amp * np.sin(2 * np.pi * freq * t)
+                            
+                            # Mix by adding (with gain reduction to prevent clipping)
+                            mixed_buffer += note_buffer * 0.3
+                    else:
+                        # No active notes - send silence
+                        mixed_buffer = np.zeros(buffer_size, dtype=np.float32)
+                    
+                    # Limit amplitude to prevent clipping
+                    if np.max(np.abs(mixed_buffer)) > 1.0:
+                        mixed_buffer = mixed_buffer / np.max(np.abs(mixed_buffer))
+                    
+                    # Write directly to audio output
+                    stream.write(mixed_buffer.tobytes())
+                    
+                except Exception as e:
+                    logger.error(f"Error in PyAudio generation: {e}")
+                    time.sleep(0.1)  # Short sleep on error
+            
+            # Clean up
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
+            logger.info("Closed PyAudio stream")
+                
+        except Exception as e:
+            logger.error(f"Error in PyAudio fallback: {e}")
+            logger.error("No audio output available")
     
     def stop(self):
         """Stop the worker."""
         try:
-            # Stop render thread
+            # Stop all threads
             self.running = False
+            
             if self.render_thread:
                 self.render_thread.join(timeout=2.0)
                 self.render_thread = None
+                
+            if hasattr(self, 'audio_thread') and self.audio_thread:
+                self.audio_thread.join(timeout=2.0)
+                self.audio_thread = None
             
             # Stop OSC server
             self.osc_server.stop()
             
             # Close RTP sender
             self.rtp_sender.close()
+            
+            # Close socket connection if open
+            if hasattr(self, 'stream_socket') and self.stream_socket:
+                try:
+                    self.stream_socket.close()
+                    self.stream_socket = None
+                    logger.info("Closed direct audio socket connection")
+                except Exception as e:
+                    logger.error(f"Error closing socket connection: {e}")
             
             # Clean up audio server if local audio was enabled
             if self.local_audio and hasattr(self, 'audio_server'):
@@ -384,12 +670,25 @@ def main():
     parser.add_argument("--sr", type=int, default=44100, help="Audio sample rate")
     parser.add_argument("--polyphony", type=int, default=8, help="Maximum polyphony")
     parser.add_argument("--local-audio", action="store_true", help="Enable local audio output")
+    parser.add_argument("--use-pyo", action="store_true", help="Use Pyo for local audio (legacy mode)")
+    parser.add_argument("--jack-client-name", default="caelus_worker", help="Name to use for Jack client")
+    parser.add_argument("--jack-connect-to", help="Jack port to connect to (optional, auto-detected if not specified)")
     parser.add_argument("--controller-ip", default="127.0.0.1", help="IP address of the controller to register with")
     parser.add_argument("--controller-port", type=int, default=8000, help="OSC port of the controller")
     
     args = parser.parse_args()
     
-    worker = CaelusWorker(args.ip, args.port, args.sr, args.polyphony, args.local_audio)
+    # Create worker with updated parameters
+    worker = CaelusWorker(
+        osc_ip=args.ip, 
+        osc_port=args.port, 
+        sample_rate=args.sr, 
+        max_polyphony=args.polyphony, 
+        local_audio=args.local_audio,
+        use_pyo=args.use_pyo,
+        jack_client_name=args.jack_client_name,
+        jack_connect_to=args.jack_connect_to
+    )
     worker.start(args.controller_ip, args.controller_port)
     
     try:

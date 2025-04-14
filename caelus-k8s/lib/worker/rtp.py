@@ -64,12 +64,13 @@ class RTPSender:
         logger.info(f"RTP stream setup for {ip}:{port}")
         return True
     
-    def _create_rtp_packet(self, payload, timestamp=None):
+    def _create_rtp_packet(self, payload, timestamp=None, marker=False):
         """Create an RTP packet.
         
         Args:
             payload (bytes): Audio payload
             timestamp (int, optional): RTP timestamp
+            marker (bool, optional): Set the marker bit (used for special events like end of stream)
             
         Returns:
             bytes: RTP packet
@@ -89,7 +90,7 @@ class RTPSender:
         padding = 0
         extension = 0
         cc = 0
-        marker = 0
+        marker = 1 if marker else 0  # Set marker bit if requested (used for end of stream)
         payload_type = 11  # PCM audio
         
         byte1 = (version << 6) | (padding << 5) | (extension << 4) | cc
@@ -117,11 +118,12 @@ class RTPSender:
         # Combine header and payload
         return header + payload
     
-    def stream_buffer(self, buffer):
+    def stream_buffer(self, buffer, end_of_stream=False):
         """Stream an audio buffer over RTP.
         
         Args:
             buffer (numpy.ndarray): Audio buffer to stream
+            end_of_stream (bool): If True, mark this as the final packet in the stream
         """
         if not self.socket or not self.target_ip or not self.target_port:
             logger.error("RTP socket not set up")
@@ -133,27 +135,28 @@ class RTPSender:
                 logger.warning("Empty buffer provided to stream_buffer")
                 return False
                 
-            # Convert float32 audio to int16 PCM
-            pcm_data = (buffer * 32767).astype(np.int16)
+            # Keep data in float32 format throughout the pipeline 
+            # No conversions to int16 and back
+            payload = buffer.tobytes()
             
-            # Convert to bytes
-            payload = pcm_data.tobytes()
-            
-            # Create RTP packet
-            packet = self._create_rtp_packet(payload)
+            # Create RTP packet (marker bit set for end_of_stream)
+            packet = self._create_rtp_packet(payload, timestamp=None, marker=end_of_stream)
             
             # Send packet
             self.socket.sendto(packet, (self.target_ip, self.target_port))
             
             duration = len(buffer) / self.sr
-            logger.info(f"Streamed {duration:.2f}s buffer ({len(payload)} bytes) to {self.target_ip}:{self.target_port}")
+            if end_of_stream:
+                logger.info(f"Streamed END-OF-STREAM marker packet ({len(payload)} bytes) to {self.target_ip}:{self.target_port}")
+            else:
+                logger.info(f"Streamed {duration:.2f}s buffer ({len(payload)} bytes) to {self.target_ip}:{self.target_port}")
             return True
         
         except Exception as e:
             logger.error(f"Error streaming buffer: {e}")
             return False
     
-    def stream_buffer_chunked(self, buffer, chunk_size=1024, chunk_interval=0.020, note=None):
+    def stream_buffer_chunked(self, buffer, chunk_size=8192, chunk_interval=0.1, note=None):
         """Stream a buffer in chunks for continuous playback.
         
         Args:
@@ -192,22 +195,33 @@ class RTPSender:
             # Calculate number of chunks
             num_chunks = (len(buffer) + chunk_size - 1) // chunk_size
             
-            # Calculate timestamp increment per chunk
-            timestamp_increment = int(chunk_size)
-            base_timestamp = int(time.time() * self.sr)
+            # Use consistently incrementing timestamp for better timing synchronization
+            # Start with a random offset to identify this stream uniquely
+            stream_start_time = int(time.time() * self.sr)
+            
+            # Store the scheduled send time for each packet for better timing accuracy
+            next_send_time = time.time()
             
             logger.info(f"Streaming {num_chunks} chunks, {chunk_interval*1000:.1f}ms apart")
             
-            # Maximum streaming time (0.5 seconds - much shorter to stop more quickly)
-            max_duration = 0.5  # in seconds (reduced from 4.0)
-            max_chunks = min(num_chunks, int(max_duration / chunk_interval))
+            # Stream the entire buffer - no limits
+            max_chunks = num_chunks
             
             # Stream each chunk (up to max_chunks)
             for i in range(max_chunks):
                 if not self.streaming:
                     logger.info("Streaming stopped")
                     break
-                    
+                
+                # Calculate precise send time
+                current_time = time.time()
+                if current_time < next_send_time:
+                    # Sleep precisely until the next scheduled time
+                    time.sleep(next_send_time - current_time)
+                
+                # Update the next scheduled send time
+                next_send_time += chunk_interval
+                
                 # Extract chunk
                 start = i * chunk_size
                 end = min(start + chunk_size, len(buffer))
@@ -217,21 +231,23 @@ class RTPSender:
                 if len(chunk) < chunk_size:
                     chunk = np.pad(chunk, (0, chunk_size - len(chunk)), 'constant')
                 
-                # Convert to PCM and create packet
-                pcm_data = (chunk * 32767).astype(np.int16)
-                payload = pcm_data.tobytes()
+                # Keep as float32 - no conversion to prevent distortion
+                payload = chunk.tobytes()
                 
-                # Calculate timestamp for this chunk
-                timestamp = (base_timestamp + i * timestamp_increment) & 0xFFFFFFFF
+                # Calculate precise timestamp for this chunk
+                # This timestamp is critical for precise playback timing
+                timestamp = (stream_start_time + i * chunk_size) & 0xFFFFFFFF
                 
-                # Create and send packet
+                # Create and send packet - NO CONVERSION AT ALL
+                # Simple streaming of raw float32 data exactly as generated
                 packet = self._create_rtp_packet(payload, timestamp)
                 self.socket.sendto(packet, (self.target_ip, self.target_port))
                 
-                # Wait for next chunk
-                time.sleep(chunk_interval)
+                # Log less frequently to reduce overhead
+                if i % 10 == 0:
+                    logger.debug(f"Sent chunk {i}/{max_chunks} with timestamp {timestamp}")
             
-            logger.info(f"Finished streaming {max_chunks} of {num_chunks} chunks (limited to {max_duration}s)")
+            logger.info(f"Finished streaming {max_chunks} of {num_chunks} chunks")
             
         except Exception as e:
             logger.error(f"Error in streaming thread: {e}")

@@ -42,11 +42,41 @@ class MIDIInputHandler:
         """
         self.callback = callback
     
-    def open_port(self, port_name=None):
+    def select_port_interactively(self):
+        """Prompt user to select a MIDI input port interactively.
+        
+        Returns:
+            str or None: Selected port name, or None if cancelled
+        """
+        if not self.available_ports:
+            logger.error("No MIDI input ports available")
+            return None
+            
+        print("\nAvailable MIDI input ports:")
+        for i, port in enumerate(self.available_ports):
+            print(f"  {i+1}. {port}")
+        print("  0. Cancel / Use virtual port")
+        
+        try:
+            choice = input("\nSelect MIDI input port (enter number): ")
+            if choice.strip() == "" or choice == "0":
+                return None
+                
+            index = int(choice) - 1
+            if 0 <= index < len(self.available_ports):
+                return self.available_ports[index]
+            else:
+                logger.error("Invalid port selection")
+                return None
+        except (ValueError, KeyboardInterrupt):
+            return None
+            
+    def open_port(self, port_name=None, interactive=False):
         """Open a MIDI input port.
         
         Args:
             port_name (str, optional): Name of the port to open. If None, open the first available port.
+            interactive (bool, optional): If True, prompt user to select a port.
             
         Returns:
             bool: True if port was opened successfully, False otherwise
@@ -55,6 +85,14 @@ class MIDIInputHandler:
         self.close_port()
         
         try:
+            # If interactive mode, prompt user to select a port
+            if interactive:
+                port_name = self.select_port_interactively()
+                if port_name is None:
+                    logger.info("No MIDI port selected, will use virtual port")
+                    return False
+            
+            # If port_name is still None, use first available port
             if port_name is None:
                 if self.available_ports:
                     port_name = self.available_ports[0]
@@ -102,6 +140,9 @@ class MIDIInputHandler:
         Args:
             message (mido.Message): MIDI message
         """
+        # Log all incoming MIDI messages
+        logger.info(f"MIDI input received: {message}")
+        
         if self.callback is not None:
             # For real MIDI input, make a copy to prevent shared reference issues
             # This is important for multi-threaded processing
