@@ -1,6 +1,7 @@
 # Caelus K8s
 
 A distributed polyphonic synthesizer designed to run in a Kubernetes environment.
+"If Brian Eno and Kelsey Hightower had a baby synth, it’d be Caelus K8s."
 
 ![Caelus K8s Architecture](./Caelus-K8s.png)
 
