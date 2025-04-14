@@ -41,28 +41,68 @@ For Kubernetes deployment, see the [Kubernetes README](kubernetes/README.md).
 
 ## Usage
 
-### Start a Worker
-
+First, activate the virtual environment:
 ```
-./caelus worker --ip 0.0.0.0 --port 9000
+source venv/bin/activate
 ```
 
 ### Start the Controller
 
 ```
-./caelus controller --worker-ip 127.0.0.1 --worker-port 9000 --rtp-port 5000
+./caelus controller
 ```
 
-### Run Test Notes
+The controller:
+- Uses JACK audio with client name "controller"
+- Prompts for MIDI input device selection
+- Listens for workers to register
 
+### Start Workers
+
+Start the first worker:
 ```
-./caelus controller --worker-ip 127.0.0.1 --test
+./caelus worker
 ```
 
-### Run Without Audio Output
-
+Start additional workers (use different ports and client names):
 ```
-./caelus controller --worker-ip 127.0.0.1 --offline --test
+./caelus worker --port 9001 --jack-client-name worker2
+./caelus worker --port 9002 --jack-client-name worker3
+```
+
+Each worker:
+- Registers with the controller
+- Generates audio for notes assigned by the controller
+- Streams audio via JACK
+
+### Additional Options
+
+#### Test Notes
+
+Send test notes through the controller:
+```
+./caelus controller --test
+```
+
+#### Run Without Audio Output
+
+Run in offline mode (disable audio):
+```
+./caelus controller --offline
+```
+
+#### Disable MIDI Selection
+
+Skip the MIDI device selection prompt:
+```
+./caelus controller --no-select-midi
+```
+
+#### Disable JACK Audio
+
+Use socket mode instead of JACK:
+```
+./caelus controller --no-jack
 ```
 
 ## Architecture

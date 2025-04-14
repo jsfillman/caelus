@@ -64,22 +64,23 @@
 
 ------
 
-## **6. Audio System (Pyo)**
+## **6. Audio System**
 
 ### **Worker Side**
 
-- Pyo server in non-realtime/offline mode for rendering small buffers.
+- JACK audio for professional low-latency audio.
 - Each note generates:
-  - Sine wave (eventually expandable to FM/ADSR).
-  - Fixed-length buffer (~100–200ms).
-  - Timestamped audio block.
-  - RTP sender transmits buffer.
+  - Sine wave oscillator (eventually expandable to FM/ADSR).
+  - Continuous audio stream.
+  - Optional fallback to Pyo or PyAudio if JACK is unavailable.
 
 ### **Controller Side**
 
-- Buffers per worker input stream.
-- Timestamp alignment and mixing into stereo output buffer.
-- Playback via Pyo, JACK, or PySoundDevice.
+- Receives audio streams from all workers via JACK.
+- Automatic connection to workers' output ports.
+- Mixes all inputs into stereo output.
+- MIDI input with interactive device selection.
+- JACK client always named "controller" for consistent routing.
 
 ------
 

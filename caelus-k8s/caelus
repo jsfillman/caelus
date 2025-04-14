@@ -31,12 +31,17 @@ def main():
     parser.add_argument("--rtp-port", type=int, default=5000, help="Port to listen on for RTP (for controller mode)")
     parser.add_argument("--test", action="store_true", help="Send test notes (for controller mode)")
     parser.add_argument("--offline", action="store_true", help="Run without audio output (for controller mode)")
+    # Controller Jack client name is always "controller"
+    parser.add_argument("--no-select-midi", action="store_true", help="Don't interactively select MIDI input device (for controller mode)")
+    parser.add_argument("--no-jack", action="store_true", help="Disable Jack audio (use socket mode) (for controller mode)")
     
     # Worker-specific arguments
     parser.add_argument("--ip", default="0.0.0.0", help="IP to listen on for OSC messages (for worker mode)")
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on for OSC messages (for worker mode)")
+    parser.add_argument("--controller-ip", default="127.0.0.1", help="IP address of the controller to register with (for worker mode)")
     parser.add_argument("--sr", type=int, default=44100, help="Audio sample rate (for worker mode)")
     parser.add_argument("--polyphony", type=int, default=8, help="Maximum polyphony per worker (for worker mode)")
+    parser.add_argument("--jack-client-name", dest="worker_jack_client_name", default="worker1", help="Name to use for Jack client (for worker mode)")
     
     args = parser.parse_args()
     
@@ -44,12 +49,21 @@ def main():
         from lib.controller.controller import CaelusController
         
         logger.info("Starting Caelus K8s Controller")
-        # Initialize controller with RTP port and offline mode
-        controller = CaelusController(rtp_port=args.rtp_port, offline_mode=args.offline)
+        # Initialize controller with RTP port, offline mode, and Jack settings
+        controller = CaelusController(
+            rtp_port=args.rtp_port, 
+            offline_mode=args.offline,
+            jack_client_name="controller",  # Always use "controller" as the Jack client name
+            use_jack=not args.no_jack
+        )
         
         # Add worker if specified
         if args.worker_ip:
             controller.add_worker(args.worker_ip, args.worker_port)
+        
+        # Set MIDI selection flag - select MIDI by default
+        import lib.controller.controller as controller_module
+        controller_module.midi_select_flag = not args.no_select_midi
         
         if controller.start():
             try:
@@ -69,9 +83,15 @@ def main():
         from lib.worker.worker import CaelusWorker
         
         logger.info("Starting Caelus K8s Worker")
-        worker = CaelusWorker(args.ip, args.port, args.sr, args.polyphony)
+        worker = CaelusWorker(
+            osc_ip=args.ip, 
+            osc_port=args.port, 
+            sample_rate=args.sr, 
+            max_polyphony=args.polyphony,
+            jack_client_name=args.worker_jack_client_name
+        )
         
-        worker.start()
+        worker.start(args.controller_ip)
         try:
             print("Worker running. Press Ctrl+C to exit.")
             import time
