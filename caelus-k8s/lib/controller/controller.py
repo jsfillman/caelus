@@ -10,7 +10,7 @@ import random
 import threading
 from mido import Message
 
-from lib.common.osc import OSCClient, OSCServer, WORKER_STATUS, WORKER_READY
+from lib.common.osc import OSCClient, OSCServer, WORKER_STATUS, WORKER_READY, AFTERTOUCH_POLY, AFTERTOUCH_CHANNEL
 from lib.controller.midi import MIDIInputHandler
 from lib.controller.rtp import RTPReceiver
 
@@ -202,6 +202,10 @@ class CaelusController:
             self._handle_note_on(message.note, message.velocity)
         elif message.type == 'note_off' or (message.type == 'note_on' and message.velocity == 0):
             self._handle_note_off(message.note)
+        elif message.type == 'polytouch':
+            self._handle_poly_aftertouch(message.note, message.value)
+        elif message.type == 'aftertouch':
+            self._handle_channel_aftertouch(message.value)
     
     def _find_worker_for_note(self, note):
         """Find a worker to play a new note, with note stealing if needed.
@@ -383,6 +387,47 @@ class CaelusController:
             logger.info(f"Note-off sent to worker {worker_id} for note {note}")
         else:
             logger.warning(f"Note off for inactive note: {note}")
+            
+    def _handle_poly_aftertouch(self, note, pressure):
+        """Handle polyphonic aftertouch MIDI message.
+        
+        Args:
+            note (int): MIDI note number
+            pressure (int): Aftertouch pressure value (0-127)
+        """
+        logger.info(f"Polyphonic aftertouch: note={note}, pressure={pressure}")
+        
+        # Check if the note is currently playing
+        if note in self.active_notes:
+            worker_id = self.active_notes[note]
+            
+            # Forward the aftertouch message to the worker handling this note
+            if worker_id in self.workers:
+                self.workers[worker_id].osc_client.send_aftertouch_poly(note, pressure)
+                logger.info(f"Sent poly aftertouch to worker {worker_id} for note {note}")
+            else:
+                logger.warning(f"Worker {worker_id} not found for poly aftertouch")
+        else:
+            logger.warning(f"Poly aftertouch for inactive note: {note}")
+            
+    def _handle_channel_aftertouch(self, pressure):
+        """Handle channel aftertouch MIDI message.
+        
+        Args:
+            pressure (int): Aftertouch pressure value (0-127)
+        """
+        logger.info(f"Channel aftertouch: pressure={pressure}")
+        
+        # Channel aftertouch affects all active notes
+        # Send it to all workers that have active notes
+        worker_ids = set(self.active_notes.values())
+        
+        for worker_id in worker_ids:
+            if worker_id in self.workers:
+                self.workers[worker_id].osc_client.send_aftertouch_channel(pressure)
+                logger.info(f"Sent channel aftertouch to worker {worker_id}")
+            else:
+                logger.warning(f"Worker {worker_id} not found for channel aftertouch")
     
     def add_worker(self, ip, osc_port, note_capacity=1):
         """Add a worker to the controller.

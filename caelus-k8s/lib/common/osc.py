@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # OSC message types
 NOTE_ON = "/caelus/note/on"
 NOTE_OFF = "/caelus/note/off"
+AFTERTOUCH_POLY = "/caelus/aftertouch/poly"
+AFTERTOUCH_CHANNEL = "/caelus/aftertouch/channel"
 WORKER_READY = "/caelus/worker/ready"
 WORKER_STATUS = "/caelus/worker/status"
 
@@ -58,6 +60,25 @@ class OSCClient:
         """
         self.client.send_message(NOTE_OFF, [note])
         logger.debug(f"Sent note off: {note}")
+        
+    def send_aftertouch_poly(self, note, pressure):
+        """Send polyphonic aftertouch message.
+        
+        Args:
+            note (int): MIDI note number (0-127)
+            pressure (int): Aftertouch pressure value (0-127)
+        """
+        self.client.send_message(AFTERTOUCH_POLY, [note, pressure])
+        logger.debug(f"Sent poly aftertouch: note={note}, pressure={pressure}")
+        
+    def send_aftertouch_channel(self, pressure):
+        """Send channel aftertouch message.
+        
+        Args:
+            pressure (int): Aftertouch pressure value (0-127)
+        """
+        self.client.send_message(AFTERTOUCH_CHANNEL, [pressure])
+        logger.debug(f"Sent channel aftertouch: pressure={pressure}")
 
 class OSCServer:
     """Simple OSC server for receiving messages from controller/workers."""

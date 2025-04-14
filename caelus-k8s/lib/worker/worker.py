@@ -11,7 +11,7 @@ import random
 import numpy as np
 from pythonosc import dispatcher
 
-from lib.common.osc import OSCServer, NOTE_ON, NOTE_OFF, WORKER_READY, WORKER_STATUS
+from lib.common.osc import OSCServer, NOTE_ON, NOTE_OFF, WORKER_READY, WORKER_STATUS, AFTERTOUCH_POLY, AFTERTOUCH_CHANNEL
 from lib.worker.oscillator import SineOscillator
 from lib.worker.rtp import RTPSender
 
@@ -65,6 +65,8 @@ class CaelusWorker:
         self.dispatcher = dispatcher.Dispatcher()
         self.dispatcher.map(NOTE_ON, self._handle_note_on)
         self.dispatcher.map(NOTE_OFF, self._handle_note_off)
+        self.dispatcher.map(AFTERTOUCH_POLY, self._handle_aftertouch_poly)
+        self.dispatcher.map(AFTERTOUCH_CHANNEL, self._handle_aftertouch_channel)
         self.dispatcher.map(WORKER_STATUS, self._handle_worker_status)
         
         self.osc_server = OSCServer(osc_ip, osc_port, self.dispatcher)
@@ -182,6 +184,81 @@ class CaelusWorker:
         except Exception as e:
             logger.error(f"Error in _handle_note_off: {e}")
     
+    def _handle_aftertouch_poly(self, address, *args):
+        """Handle polyphonic aftertouch OSC message.
+        
+        Args:
+            address (str): OSC address
+            *args: OSC arguments (note, pressure)
+        """
+        try:
+            if len(args) < 2:
+                logger.error(f"Not enough arguments for poly aftertouch: {args}")
+                return
+                
+            note = args[0]
+            pressure = args[1]
+            logger.info(f"Poly aftertouch: note={note}, pressure={pressure}")
+            
+            # Check if the note is playing
+            if note in self.active_notes:
+                # Get the current frequency and update the amplitude based on pressure
+                frequency, _ = self.active_notes[note]
+                
+                # Scale the pressure to a reasonable amplitude range (0.1-1.0)
+                # This ensures the note doesn't go completely silent at low pressure
+                new_amplitude = 0.1 + (pressure / 127.0) * 0.9
+                
+                # Update the amplitude in our active_notes dictionary
+                self.active_notes[note] = (frequency, new_amplitude)
+                
+                # Also update in the oscillator's active notes
+                if hasattr(self.oscillator, 'active_notes'):
+                    self.oscillator.active_notes[note] = (frequency, new_amplitude)
+                
+                logger.info(f"Updated amplitude for note {note} to {new_amplitude:.2f} from pressure {pressure}")
+            else:
+                logger.warning(f"Poly aftertouch for inactive note: {note}")
+                
+        except Exception as e:
+            logger.error(f"Error in _handle_aftertouch_poly: {e}")
+    
+    def _handle_aftertouch_channel(self, address, *args):
+        """Handle channel aftertouch OSC message.
+        
+        Args:
+            address (str): OSC address
+            *args: OSC arguments (pressure)
+        """
+        try:
+            if len(args) < 1:
+                logger.error(f"Not enough arguments for channel aftertouch: {args}")
+                return
+                
+            pressure = args[0]
+            logger.info(f"Channel aftertouch: pressure={pressure}")
+            
+            # Scale the pressure to a reasonable amplitude range (0.1-1.0)
+            new_amplitude = 0.1 + (pressure / 127.0) * 0.9
+            
+            # Apply to all active notes
+            for note in list(self.active_notes.keys()):
+                frequency, _ = self.active_notes[note]
+                
+                # Update amplitude in our active_notes dictionary
+                self.active_notes[note] = (frequency, new_amplitude)
+                
+                # Also update in the oscillator's active notes
+                if hasattr(self.oscillator, 'active_notes'):
+                    self.oscillator.active_notes[note] = (frequency, new_amplitude)
+            
+            note_count = len(self.active_notes)
+            if note_count > 0:
+                logger.info(f"Updated amplitude for all {note_count} active notes to {new_amplitude:.2f} from pressure {pressure}")
+                
+        except Exception as e:
+            logger.error(f"Error in _handle_aftertouch_channel: {e}")
+
     def _handle_worker_status(self, address, *args):
         """Handle worker status request.
         
@@ -444,7 +521,8 @@ class CaelusWorker:
                             # Calculate phase increment per sample
                             phase_increment = 2 * np.pi * freq / sample_rate
                             
-                            # Generate sine wave samples
+                            # Generate sine wave samples with current amplitude
+                            # Important: use the current amplitude value which may have been modified by aftertouch
                             note_buffer = np.zeros(frames, dtype=np.float32)
                             for i in range(frames):
                                 note_buffer[i] = amp * np.sin(phase[note])
@@ -455,6 +533,10 @@ class CaelusWorker:
                             
                             # Mix with lower gain to prevent clipping
                             mixed_buffer += note_buffer * 0.5  # Increased gain for better audibility
+                            
+                            # Periodically log the current amplitude to verify aftertouch is working
+                            if random.random() < 0.005:  # Occasionally log (0.5% chance per callback)
+                                logger.info(f"Note {note} playing at freq={freq:.2f}Hz, amp={amp:.2f}")
                         
                         # Clean up phases for notes that are no longer active
                         for note in list(phase.keys()):
