@@ -520,15 +520,15 @@ class CaelusWorker:
                         active_note_count = len(current_active_notes)
                         
                         # Calculate per-note gain using square-root scaling for perceptual balance
-                        # This ensures that multiple notes don't cause clipping
+                        # VERY conservative settings to prevent clipping completely
                         if active_note_count > 1:
-                            # Use square-root scaling for balanced polyphony
-                            note_gain = 0.7 / np.sqrt(active_note_count)
+                            # Use square-root scaling for balanced polyphony, but with more conservative gain
+                            note_gain = 0.4 / np.sqrt(active_note_count)
                         else:
-                            note_gain = 0.7  # Single note can be louder
+                            note_gain = 0.4  # Even single notes should be quieter to prevent clipping
                         
-                        # Log the gain calculation for debugging
-                        if random.random() < 0.01:  # 1% chance to log
+                        # Log the gain calculation very infrequently
+                        if random.random() < 0.0005:  # 0.05% chance to log
                             logger.info(f"Worker polyphony: {active_note_count} notes, gain={note_gain:.3f}")
                             
                         # Mix in all active notes with phase continuity
@@ -554,8 +554,8 @@ class CaelusWorker:
                             # Apply the calculated gain and mix into the buffer
                             mixed_buffer += note_buffer * note_gain
                             
-                            # Periodically log the current amplitude to verify aftertouch is working
-                            if random.random() < 0.005:  # Occasionally log (0.5% chance per callback)
+                            # Rarely log individual note information 
+                            if random.random() < 0.0005:  # Very rarely log (0.05% chance per callback)
                                 logger.info(f"Note {note} playing at freq={freq:.2f}Hz, amp={amp:.2f}")
                         
                         # Clean up phases for notes that are no longer active
@@ -563,19 +563,39 @@ class CaelusWorker:
                             if note not in current_active_notes:
                                 del phase[note]
                     
-                    # Soft limit to prevent hard clipping
-                    # Apply a very gentle compression curve
+                    # Strict limiter to absolutely prevent clipping
+                    # Apply a more aggressive limiter to ensure no clipping at the worker level
                     max_amp = np.max(np.abs(mixed_buffer))
-                    if max_amp > 0.8:
-                        # Apply soft limiter
-                        gain = 0.8 / max_amp
-                        mixed_buffer *= gain
                     
-                    # For debugging, periodically log the audio level
-                    if random.random() < 0.01:  # 1% chance each callback
+                    # Two-stage limiting for better audio quality
+                    # First stage: gentle threshold
+                    if max_amp > 0.5:
+                        # Apply soft knee limiting for a smoother sound
+                        target_amp = 0.5
+                        gain = target_amp / max_amp
+                        mixed_buffer *= gain
+                        
+                        # Log limiting actions very infrequently
+                        if random.random() < 0.0005 and max_amp > 0.1:  # 0.05% chance to log and only if significant
+                            logger.info(f"Worker limiter stage 1: max_amp={max_amp:.4f}, gain={gain:.4f}")
+                    
+                    # Second stage: safety hard limit at 0.7 to absolutely prevent clipping
+                    # This is redundant but provides an additional safety net
+                    max_amp = np.max(np.abs(mixed_buffer))
+                    if max_amp > 0.7:
+                        gain = 0.7 / max_amp
+                        mixed_buffer *= gain
+                        
+                        # Log limiting actions very infrequently
+                        if random.random() < 0.0005 and max_amp > 0.1:  # 0.05% chance to log and only if significant
+                            logger.info(f"Worker limiter stage 2: max_amp={max_amp:.4f}, gain={gain:.4f}")
+                    
+                    # Very infrequently log audio levels, and only when there's actual audio
+                    if random.random() < 0.0005:  # 0.05% chance each callback (20x less frequent)
                         rms = np.sqrt(np.mean(mixed_buffer**2))
                         peak = np.max(np.abs(mixed_buffer))
-                        logger.info(f"Worker audio: rms={rms:.4f}, peak={peak:.4f}")
+                        if peak > 0.01:  # Only log when there's actual audio
+                            logger.info(f"Worker audio: rms={rms:.4f}, peak={peak:.4f}")
                     
                     # Send to both Jack output ports (stereo output)
                     outport_left.get_array()[:] = mixed_buffer

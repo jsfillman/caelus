@@ -566,13 +566,14 @@ class RTPReceiver:
                     
                     # Calculate gain based on active notes
                     # Use square-root scaling for perceptual balance
+                    # But with much more conservative scaling to prevent clipping
                     if self.active_notes_count > 1:
-                        gain = 1.0 / np.sqrt(self.active_notes_count)
+                        gain = 0.5 / np.sqrt(self.active_notes_count)
                     else:
-                        gain = 1.0
+                        gain = 0.5
                         
-                    # Apply a small safety margin to prevent clipping
-                    gain *= 0.9
+                    # Apply an additional safety margin to prevent clipping
+                    gain *= 0.8
                     
                     # Second pass to mix audio with calculated gain and DC blocking filter
                     for input_port in all_ports:
@@ -594,21 +595,57 @@ class RTPReceiver:
                         mixed_left += filtered_data * gain
                         mixed_right += filtered_data * gain
                     
-                    # Apply soft limiter to prevent clipping
-                    # This uses a simple tanh-based soft clipper
+                    # Multi-stage limiter to absolutely prevent clipping
+                    # Stage 1: Apply a gentle limiter first for smooth volume control
                     peak_left = np.max(np.abs(mixed_left))
                     peak_right = np.max(np.abs(mixed_right))
                     peak_level = max(peak_left, peak_right)
                     
-                    if peak_level > 0.95:
-                        # Apply more aggressive limiting if we're close to clipping
-                        limiting_gain = 0.95 / peak_level
+                    if peak_level > 0.5:
+                        # Apply limiting with soft knee for musical sound
+                        limiting_gain = 0.5 / peak_level
                         mixed_left *= limiting_gain
                         mixed_right *= limiting_gain
                         
-                        # Log the limiting action occasionally
-                        if random.random() < 0.01:  # 1% chance to log
-                            logger.info(f"Limiter activated: peak={peak_level:.2f}, gain={limiting_gain:.2f}")
+                        # Log the limiting action very rarely
+                        if random.random() < 0.0005 and peak_level > 0.1:  # 0.05% chance to log and only if significant
+                            logger.info(f"Controller limiter stage 1: peak={peak_level:.3f}, gain={limiting_gain:.3f}")
+                    
+                    # Stage 2: Hard safety limiter as a backup
+                    peak_left = np.max(np.abs(mixed_left))
+                    peak_right = np.max(np.abs(mixed_right))
+                    peak_level = max(peak_left, peak_right)
+                    
+                    if peak_level > 0.7:
+                        # Apply final hard limit to catch any remaining peaks
+                        limiting_gain = 0.7 / peak_level
+                        mixed_left *= limiting_gain
+                        mixed_right *= limiting_gain
+                        
+                        # Log the limiting action very rarely
+                        if random.random() < 0.0005 and peak_level > 0.1:  # 0.05% chance to log and only if significant
+                            logger.info(f"Controller limiter stage 2: peak={peak_level:.3f}, gain={limiting_gain:.3f}")
+                            
+                    # Stage 3: Tanh soft clipping as ultimate protection
+                    # This adds a slight warmth/saturation rather than harsh clipping
+                    def tanh_soft_clip(buffer, threshold=0.8):
+                        # Only apply to values that exceed the threshold
+                        mask = np.abs(buffer) > threshold
+                        if np.any(mask):
+                            # Scale the input to the tanh function to control the amount of saturation
+                            scale = 0.3
+                            # Apply tanh only to values exceeding the threshold
+                            buffer[mask] = np.tanh(buffer[mask] * scale) / scale * 0.8
+                        return buffer
+                    
+                    # Apply soft saturation to both channels
+                    mixed_left = tanh_soft_clip(mixed_left)
+                    mixed_right = tanh_soft_clip(mixed_right)
+                    
+                    # Final peak check for logging
+                    final_peak = max(np.max(np.abs(mixed_left)), np.max(np.abs(mixed_right)))
+                    if final_peak > 0.9 and random.random() < 0.1:  # 10% chance if still high
+                        logger.warning(f"High output level detected after all limiters: peak={final_peak:.3f}")
                     
                     # Apply a noise gate to prevent silent buzzing
                     noise_threshold = 0.001
@@ -623,15 +660,15 @@ class RTPReceiver:
                     outport_left.get_array()[:] = mixed_left
                     outport_right.get_array()[:] = mixed_right
                     
-                    # Log audio levels occasionally to help diagnose issues
-                    if random.random() < 0.01:  # 1% of callbacks
+                    # Very rarely log audio levels to reduce log spam
+                    if random.random() < 0.0005:  # 0.05% of callbacks
                         rms_l = np.sqrt(np.mean(np.square(mixed_left)))
                         peak_l = np.max(np.abs(mixed_left))
                         rms_r = np.sqrt(np.mean(np.square(mixed_right)))
                         peak_r = np.max(np.abs(mixed_right))
                         
-                        if peak_l > 0.01 or peak_r > 0.01:  # Only log when there's actual audio
-                            logger.info(f"Jack audio: rms={rms_l:.4f}/{rms_r:.4f}, peak={peak_l:.4f}/{peak_r:.4f}, active_notes={self.active_notes_count:.1f}")
+                        if peak_l > 0.05 or peak_r > 0.05:  # Only log when there's significant audio
+                            logger.info(f"Controller audio: rms={rms_l:.4f}/{rms_r:.4f}, peak={peak_l:.4f}/{peak_r:.4f}, active_notes={self.active_notes_count:.1f}")
                 
                 # Define shutdown callback
                 @self.jack_client.set_shutdown_callback
