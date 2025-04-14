@@ -507,13 +507,21 @@ class RTPReceiver:
         """Set up Jack audio client for receiving audio from workers."""
         try:
             import jack
+            import random
             
             # Create Jack client
             self.jack_client = jack.Client(self.jack_client_name)
             
-            # Create input port to receive audio from workers
-            inport = self.jack_client.inports.register("input")
-            self.jack_inports.append(inport)
+            # Create both input and output ports for proper audio routing
+            # Create stereo input ports to receive audio from workers
+            inport_left = self.jack_client.inports.register("input_left")
+            inport_right = self.jack_client.inports.register("input_right")
+            self.jack_inports = [inport_left, inport_right]
+            
+            # Create stereo output ports to send directly to system playback
+            outport_left = self.jack_client.outports.register("output_left")
+            outport_right = self.jack_client.outports.register("output_right")
+            self.jack_outports = [outport_left, outport_right]
             
             # Get actual buffer size and sample rate from Jack
             self.buffer_size = self.jack_client.blocksize
@@ -524,6 +532,7 @@ class RTPReceiver:
             
             # Set up audio output if not in offline mode
             try:
+                # Set up PyAudio as a fallback
                 import pyaudio
                 self.pyaudio = pyaudio.PyAudio()
                 self.stream = self.pyaudio.open(
@@ -539,15 +548,70 @@ class RTPReceiver:
                 self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
                 self.buffer_position = 0
                 
-                # Define process callback
+                # For DC blocking filter
+                self.prev_sample_left = 0.0
+                self.prev_output_left = 0.0
+                self.prev_sample_right = 0.0
+                self.prev_output_right = 0.0
+                
+                # Define process callback with enhanced audio routing
                 @self.jack_client.set_process_callback
                 def process(frames):
-                    # Get audio data from input port
-                    audio_data = inport.get_array()
+                    # Get audio data from input ports
+                    audio_left = inport_left.get_array()
+                    audio_right = inport_right.get_array()
                     
-                    # Process the audio data
-                    # For example, send it directly to the PyAudio stream
-                    self.process_jack_audio(audio_data, frames)
+                    # Apply audio processing to both channels
+                    # First apply DC blocking filter to remove any buzzing
+                    filtered_left = np.zeros_like(audio_left)
+                    filtered_right = np.zeros_like(audio_right)
+                    alpha = 0.995  # Filter coefficient
+                    
+                    # Process left channel
+                    for i in range(len(audio_left)):
+                        filtered_left[i] = alpha * (self.prev_output_left + audio_left[i] - self.prev_sample_left)
+                        self.prev_sample_left = audio_left[i]
+                        self.prev_output_left = filtered_left[i]
+                        
+                    # Process right channel    
+                    for i in range(len(audio_right)):
+                        filtered_right[i] = alpha * (self.prev_output_right + audio_right[i] - self.prev_sample_right)
+                        self.prev_sample_right = audio_right[i]
+                        self.prev_output_right = filtered_right[i]
+                    
+                    # Apply noise gate to prevent silent buzzing
+                    noise_threshold = 0.001
+                    for i in range(len(filtered_left)):
+                        if abs(filtered_left[i]) < noise_threshold:
+                            filtered_left[i] = 0.0
+                    for i in range(len(filtered_right)):
+                        if abs(filtered_right[i]) < noise_threshold:
+                            filtered_right[i] = 0.0
+                            
+                    # Apply gain boost for better audibility (but not too much to avoid clipping)
+                    filtered_left *= 2.0
+                    filtered_right *= 2.0
+                    
+                    # Soft limiter to prevent clipping
+                    for buffer in [filtered_left, filtered_right]:
+                        max_amp = np.max(np.abs(buffer))
+                        if max_amp > 0.9:
+                            gain = 0.9 / max_amp
+                            buffer *= gain
+                            
+                    # Route audio to output ports
+                    outport_left.get_array()[:] = filtered_left
+                    outport_right.get_array()[:] = filtered_right
+                    
+                    # Log audio levels occasionally to help diagnose issues
+                    if random.random() < 0.01:  # 1% of callbacks
+                        rms_l = np.sqrt(np.mean(np.square(filtered_left)))
+                        peak_l = np.max(np.abs(filtered_left))
+                        rms_r = np.sqrt(np.mean(np.square(filtered_right)))
+                        peak_r = np.max(np.abs(filtered_right))
+                        
+                        if peak_l > 0.01 or peak_r > 0.01:  # Only log when there's actual audio
+                            logger.info(f"Jack audio: rms={rms_l:.4f}/{rms_r:.4f}, peak={peak_l:.4f}/{peak_r:.4f}")
                 
                 # Define shutdown callback
                 @self.jack_client.set_shutdown_callback
@@ -559,18 +623,157 @@ class RTPReceiver:
                 self.jack_client.activate()
                 logger.info(f"Jack client '{self.jack_client_name}' activated")
                 
+                # Connect output ports to system playback ports
+                self.setup_jack_outputs()
+                
+                # Start a background thread to periodically check and reconnect JACK ports
+                self._start_reconnection_thread()
+                
                 return True
                 
             except Exception as e:
-                logger.error(f"Error setting up PyAudio output: {e}")
+                logger.error(f"Error setting up PyAudio output: {e}", exc_info=True)
                 return False
                 
         except ImportError:
             logger.error("Jack module not available. Install with: pip install JACK-Client")
             return False
         except Exception as e:
-            logger.error(f"Error setting up Jack client: {e}")
+            logger.error(f"Error setting up Jack client: {e}", exc_info=True)
             return False
+    
+    def setup_jack_outputs(self):
+        """Connect Jack outputs to system playback ports."""
+        try:
+            import subprocess
+            import random
+            
+            # List all available JACK ports
+            result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
+            ports = result.stdout.strip().split('\n')
+            logger.info(f"Available JACK ports: {ports}")
+            
+            # Look for system playback ports
+            system_ports = [p for p in ports if 'system:playback' in p]
+            logger.info(f"System playback ports: {system_ports}")
+            
+            # Look for worker output ports to connect to our input ports
+            worker_ports = [p for p in ports if 'caelus_worker:output' in p or 'worker' in p.lower() and 'out' in p.lower()]
+            logger.info(f"Worker output ports: {worker_ports}")
+            
+            # First connect workers to our input if any are found
+            if worker_ports and hasattr(self, 'jack_inports') and self.jack_inports:
+                for i, port in enumerate(worker_ports[:2]):  # Up to 2 ports for stereo
+                    in_port = self.jack_inports[min(i, len(self.jack_inports)-1)]
+                    in_port_name = f'{self.jack_client_name}:{in_port.shortname}'
+                    try:
+                        subprocess.run(['jack_connect', port, in_port_name])
+                        logger.info(f"Connected worker {port} to controller input {in_port_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to connect {port} to {in_port_name}: {e}")
+            
+            # Then connect our output to system playback
+            if len(system_ports) >= 2:
+                # Connect our output ports to system playback ports for stereo
+                try:
+                    subprocess.run(['jack_connect', f'{self.jack_client_name}:output_left', 'system:playback_1'])
+                    subprocess.run(['jack_connect', f'{self.jack_client_name}:output_right', 'system:playback_2'])
+                    logger.info("Connected to system playback ports for stereo output")
+                except Exception as e:
+                    logger.warning(f"Failed to connect to system playback ports: {e}")
+            elif system_ports:
+                # Connect both channels to the one available system playback port
+                try:
+                    subprocess.run(['jack_connect', f'{self.jack_client_name}:output_left', system_ports[0]])
+                    subprocess.run(['jack_connect', f'{self.jack_client_name}:output_right', system_ports[0]])
+                    logger.info(f"Connected both channels to system playback port: {system_ports[0]}")
+                except Exception as e:
+                    logger.warning(f"Failed to connect to system playback port: {e}")
+            else:
+                logger.warning("Could not find system playback ports")
+                
+                # Try to connect to any available input ports as fallback
+                input_ports = [p for p in ports if ('input' in p.lower() or 'in_' in p.lower()) and 'system' in p.lower()]
+                if input_ports:
+                    for i, port in enumerate(input_ports[:2]):
+                        out_port = self.jack_outports[min(i, len(self.jack_outports)-1)]
+                        port_name = f'{self.jack_client_name}:{out_port.shortname}'
+                        try:
+                            subprocess.run(['jack_connect', port_name, port])
+                            logger.info(f"Connected {port_name} to fallback port: {port}")
+                        except Exception as e:
+                            logger.warning(f"Failed to connect {port_name} to {port}: {e}")
+                else:
+                    logger.warning("No suitable output ports found. Audio will be generated but not heard.")
+            
+            # As a last resort, try to connect to any ports that might receive audio
+            if not system_ports and not input_ports:
+                any_ports = [p for p in ports if p.startswith('system:') and not 'midi' in p.lower()]
+                if any_ports:
+                    for i, port in enumerate(any_ports[:2]):
+                        out_port = self.jack_outports[min(i, len(self.jack_outports)-1)]
+                        port_name = f'{self.jack_client_name}:{out_port.shortname}'
+                        try:
+                            subprocess.run(['jack_connect', port_name, port])
+                            logger.info(f"Connected {port_name} to port: {port}")
+                        except Exception as e:
+                            logger.warning(f"Failed to connect {port_name} to {port}: {e}")
+            
+            # Log all active connections for debugging
+            logger.info("Current JACK connections:")
+            conn_result = subprocess.run(['jack_lsp', '-c'], capture_output=True, text=True)
+            for line in conn_result.stdout.strip().split('\n'):
+                if self.jack_client_name in line:
+                    logger.info(f"  {line}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error connecting Jack outputs: {e}", exc_info=True)
+            return False
+    
+    def _start_reconnection_thread(self):
+        """Start a thread to periodically check and reconnect JACK ports."""
+        try:
+            import threading
+            import time
+            
+            # Flag to control thread execution
+            self.reconnect_running = True
+            
+            def reconnect_thread_func():
+                """Thread function to periodically reconnect JACK ports."""
+                logger.info("JACK reconnection thread started")
+                
+                while self.reconnect_running:
+                    try:
+                        # Sleep most of the time to avoid unnecessary CPU usage
+                        time.sleep(5)  # Check every 5 seconds
+                        
+                        # Check if our jack client is still active
+                        if not hasattr(self, 'jack_client') or not self.jack_client:
+                            logger.warning("JACK client no longer exists, stopping reconnect thread")
+                            break
+                            
+                        # Only attempt reconnection if there are active workers
+                        # This avoids continuous reconnection attempts when there are no workers
+                        if hasattr(self, 'jack_client') and self.jack_client:
+                            # Run the output setup again to reconnect any broken connections
+                            self.setup_jack_outputs()
+                            
+                    except Exception as e:
+                        logger.error(f"Error in JACK reconnection thread: {e}")
+                        # Don't stop the thread on error, just continue with the next cycle
+                
+                logger.info("JACK reconnection thread stopped")
+            
+            # Create and start the thread
+            self.reconnect_thread = threading.Thread(target=reconnect_thread_func)
+            self.reconnect_thread.daemon = True  # Daemon thread stops automatically when main thread exits
+            self.reconnect_thread.start()
+            logger.info("Started JACK port reconnection monitoring thread")
+            
+        except Exception as e:
+            logger.error(f"Error starting JACK reconnection thread: {e}")
     
     def process_jack_audio(self, audio_data, frames):
         """Process audio data received from Jack.
@@ -721,6 +924,16 @@ class RTPReceiver:
         # Stop all tone generators (legacy mode)
         for tone_id in list(self.tone_generators.keys()):
             self._stop_tone(tone_id)
+        
+        # Stop the reconnection thread if active
+        if hasattr(self, 'reconnect_running'):
+            self.reconnect_running = False
+            if hasattr(self, 'reconnect_thread') and self.reconnect_thread:
+                try:
+                    self.reconnect_thread.join(timeout=2.0)
+                    logger.info("JACK reconnection thread joined")
+                except Exception as e:
+                    logger.warning(f"Error joining reconnection thread: {e}")
         
         # Stop Jack client if active
         if self.jack_client:

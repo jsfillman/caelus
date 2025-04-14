@@ -313,8 +313,10 @@ class CaelusWorker:
                     s.close()
             """
             
-            controller_client.client.send_message(WORKER_READY, [my_ip, self.osc_port, self.max_polyphony])
-            logger.info(f"Registered with controller at {controller_ip}:{controller_port}")
+            # IMPORTANT: Send the actual polyphony setting for this worker
+            # We're explicitly setting note capacity to 1 here as requested
+            controller_client.client.send_message(WORKER_READY, [my_ip, self.osc_port, 1])
+            logger.info(f"Registered with controller at {controller_ip}:{controller_port} with capacity=1")
             
             # Store controller info
             self.controllers[controller_ip] = (controller_port, time.time())
@@ -399,8 +401,9 @@ class CaelusWorker:
                 # Connect to Jack server
                 client = jack.Client(jack_client_name)
                 
-                # Register output port (mono audio output)
-                outport = client.outports.register("output")
+                # Register both left and right output ports (stereo audio output)
+                outport_left = client.outports.register("output_left")
+                outport_right = client.outports.register("output_right")
                 
                 # Get actual buffer size and sample rate from Jack
                 buffer_size = client.blocksize
@@ -427,6 +430,10 @@ class CaelusWorker:
                     
                     # Only process if we have active notes
                     if current_active_notes:
+                        # Debug info
+                        if len(current_active_notes) > 0:
+                            logger.info(f"Processing audio for {len(current_active_notes)} notes: {list(current_active_notes.keys())}")
+                            
                         # Mix in all active notes with phase continuity
                         for note, (freq, amp) in current_active_notes.items():
                             # Ensure phase is initialized for this note
@@ -447,7 +454,7 @@ class CaelusWorker:
                                     phase[note] -= 2 * np.pi
                             
                             # Mix with lower gain to prevent clipping
-                            mixed_buffer += note_buffer * 0.2
+                            mixed_buffer += note_buffer * 0.5  # Increased gain for better audibility
                         
                         # Clean up phases for notes that are no longer active
                         for note in list(phase.keys()):
@@ -462,8 +469,15 @@ class CaelusWorker:
                         gain = 0.8 / max_amp
                         mixed_buffer *= gain
                     
-                    # Send to Jack output port with proper scaling
-                    outport.get_array()[:] = mixed_buffer
+                    # For debugging, periodically log the audio level
+                    if random.random() < 0.01:  # 1% chance each callback
+                        rms = np.sqrt(np.mean(mixed_buffer**2))
+                        peak = np.max(np.abs(mixed_buffer))
+                        logger.info(f"Worker audio: rms={rms:.4f}, peak={peak:.4f}")
+                    
+                    # Send to both Jack output ports (stereo output)
+                    outport_left.get_array()[:] = mixed_buffer
+                    outport_right.get_array()[:] = mixed_buffer  # Same signal to both channels
                 
                 # Define shutdown callback
                 @client.set_shutdown_callback
@@ -475,7 +489,7 @@ class CaelusWorker:
                 client.activate()
                 
                 # Setup network ports if we're streaming
-                if not self.local_audio or self.jack_connect_to:
+                if True:  # Always try to connect for better audio routing
                     try:
                         # Connect to specified port or auto-detect
                         import subprocess
@@ -483,7 +497,8 @@ class CaelusWorker:
                         if self.jack_connect_to:
                             # Connect to user-specified port
                             logger.info(f"Connecting to specified Jack port: {self.jack_connect_to}")
-                            subprocess.run(['jack_connect', f'{jack_client_name}:output', self.jack_connect_to])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', self.jack_connect_to])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', self.jack_connect_to])
                             logger.info(f"Connected to port: {self.jack_connect_to}")
                         else:
                             # Auto-detect and connect to available ports
@@ -492,24 +507,89 @@ class CaelusWorker:
                             result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
                             ports = result.stdout.strip().split('\n')
                             
-                            # Look for netjack ports or controller ports
-                            controller_ports = [p for p in ports if 'controller' in p and 'input' in p]
-                            netjack_ports = [p for p in ports if 'net' in p and 'input' in p]
+                            # Print all available ports for debugging
+                            logger.info(f"Available Jack ports: {ports}")
                             
-                            if controller_ports:
-                                target_port = controller_ports[0]
-                                subprocess.run(['jack_connect', f'{jack_client_name}:output', target_port])
-                                logger.info(f"Auto-connected to controller port: {target_port}")
+                            # First try to find controller ports for routing (prioritize these)
+                            controller_ports = [p for p in ports if 'caelus_controller' in p.lower() and ('in' in p.lower() or 'input' in p.lower())]
+                            
+                            # Specifically look for the controller's input ports
+                            caelus_input_ports = [p for p in ports if 'caelus_controller:input' in p.lower()]
+                            
+                            # System playback as fallback for local use
+                            system_ports = [p for p in ports if 'system:playback' in p.lower()]
+                            
+                            # Also look for netjack ports
+                            netjack_ports = [p for p in ports if ('net' in p.lower() or 'jack' in p.lower()) and ('in' in p.lower() or 'input' in p.lower())]
+                            
+                            # Any input ports as fallback
+                            input_ports = [p for p in ports if 'input' in p or 'in_' in p]
+                            
+                            # Log all detected port categories for debugging
+                            logger.info(f"Controller ports: {controller_ports}")
+                            logger.info(f"Caelus input ports: {caelus_input_ports}")
+                            logger.info(f"System ports: {system_ports}")
+                            logger.info(f"NetJack ports: {netjack_ports}")
+                            logger.info(f"Input ports: {input_ports}")
+                            
+                            # Prioritize Caelus controller's input ports for best routing
+                            if caelus_input_ports:
+                                # Explicitly connect our output to controller's input ports
+                                if len(caelus_input_ports) >= 2:
+                                    # Stereo connection
+                                    left_port = caelus_input_ports[0]
+                                    right_port = caelus_input_ports[1]
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', left_port])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', right_port])
+                                    logger.info(f"Connected to Caelus controller inputs: {left_port}, {right_port}")
+                                else:
+                                    # Mono connection (both channels to the same port)
+                                    port = caelus_input_ports[0]
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                                    logger.info(f"Connected both channels to Caelus controller input: {port}")
+                            
+                            # Next priority: any controller ports
+                            elif controller_ports:
+                                for port in controller_ports[:2]:  # Up to 2 ports
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                                    logger.info(f"Connected to controller port: {port}")
+                                    
+                            # For local audio testing, connect to system playback
+                            elif self.local_audio and system_ports:
+                                # Connect to system output ports
+                                for i, port in enumerate(system_ports[:2]):  # Up to 2 ports (stereo)
+                                    out_port = "output_left" if i == 0 else "output_right"
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:{out_port}', port])
+                                    logger.info(f"Connected {out_port} to system output: {port}")
+                                    
+                            # For netjack routing
                             elif netjack_ports:
-                                target_port = netjack_ports[0]
-                                subprocess.run(['jack_connect', f'{jack_client_name}:output', target_port])
-                                logger.info(f"Auto-connected to netjack port: {target_port}")
+                                for port in netjack_ports[:2]:  # Up to 2 ports
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                                    logger.info(f"Connected to netjack port: {port}")
+                                    
+                            # Fallback to any input port
+                            elif input_ports:
+                                for port in input_ports[:2]:  # Up to 2 ports
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                                    logger.info(f"Connected to input port: {port}")
+                                    
+                            # Direct connection to system playback as last resort
                             else:
-                                logger.warning("No suitable network or controller ports found. Audio will be generated but not streamed.")
-                                if not self.local_audio:
-                                    logger.info("Consider using --local-audio or specifying a port with --jack-connect-to")
+                                # Try direct connection to system:playback
+                                try:
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', 'system:playback_1'])
+                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', 'system:playback_2'])
+                                    logger.info("Connected directly to system playback ports")
+                                except Exception as connect_error:
+                                    logger.warning(f"Failed to connect to system playback: {connect_error}")
+                                    logger.warning("No suitable output ports found. Audio will be generated but not heard.")
                     except Exception as e:
-                        logger.error(f"Error setting up Jack connections: {e}")
+                        logger.error(f"Error setting up Jack connections: {e}", exc_info=True)
                 
                 # Log active status
                 logger.info(f"Jack client active with {len(self.active_notes)} notes")
