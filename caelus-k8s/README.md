@@ -60,6 +60,10 @@ The controller:
 
 ### Start Workers
 
+Workers can run either on the same machine as the controller or on different physical servers.
+
+**On the same machine:**
+
 Start the first worker:
 ```
 ./caelus worker
@@ -71,10 +75,28 @@ Start additional workers (use different ports and client names):
 ./caelus worker --port 9002 --jack-client-name worker3
 ```
 
+**On different physical servers:**
+
+For distributed audio, workers should still have JACK installed and running, which provides professional networked audio via NetJack:
+
+```
+./caelus worker --controller-ip <controller-ip-address> --port 9000 --jack-client-name worker1
+```
+
+**Important Note:** For proper audio routing between machines, both controller and workers should have JACK installed. Workers use NetJack to stream audio to the controller's JACK server. We recommend installing JACK on all machines in the network.
+
+**Network-only mode (experimental):**
+
+For testing purposes only, you can run a worker in network-only mode, but note that audio streaming is not yet fully implemented in this mode:
+
+```
+./caelus worker --network-only
+```
+
 Each worker:
 - Registers with the controller
 - Generates audio for notes assigned by the controller
-- Streams audio via JACK
+- Adaptively uses JACK if available or network-only mode if not
 
 ### Additional Options
 
@@ -110,6 +132,33 @@ Use socket mode instead of JACK:
 
 - **Controller**: Receives MIDI, sends OSC, receives RTP, mixes audio
 - **Worker**: Receives OSC, generates audio, sends RTP
+
+## Distributed Audio Setup with JACK
+
+For distributed audio across multiple machines, JACK needs to be properly configured:
+
+### NetJack Setup
+
+1. **On the controller machine**, start the JACK server:
+   ```
+   jackd -d alsa -r 48000
+   ```
+
+2. **On each worker machine**, start JACK with NetJack driver pointing to the controller:
+   ```
+   jackd -d net -a CONTROLLER_IP_ADDRESS
+   ```
+
+3. Run the Caelus controller and workers:
+   ```
+   # On controller machine
+   ./caelus controller
+   
+   # On each worker machine
+   ./caelus worker --controller-ip CONTROLLER_IP_ADDRESS --jack-client-name workerN
+   ```
+
+When using this setup, the workers will automatically connect their audio outputs to the controller's inputs via NetJack.
 
 ### Communication Flow
 

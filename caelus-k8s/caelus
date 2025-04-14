@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--sr", type=int, default=44100, help="Audio sample rate (for worker mode)")
     parser.add_argument("--polyphony", type=int, default=16, help="Maximum polyphony per worker (for worker mode)")
     parser.add_argument("--jack-client-name", dest="worker_jack_client_name", default="worker1", help="Name to use for Jack client (for worker mode)")
+    parser.add_argument("--network-only", action="store_true", help="Force network-only mode without JACK (for worker mode)")
     
     args = parser.parse_args()
     
@@ -88,7 +89,8 @@ def main():
             osc_port=args.port, 
             sample_rate=args.sr, 
             max_polyphony=args.polyphony,
-            jack_client_name=args.worker_jack_client_name
+            jack_client_name=args.worker_jack_client_name,
+            network_only=args.network_only  # Pass the network-only flag
         )
         
         worker.start(args.controller_ip)

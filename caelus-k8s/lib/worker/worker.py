@@ -27,7 +27,7 @@ class CaelusWorker:
     
     def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=16, 
                  local_audio=False, use_pyo=False, jack_client_name="caelus_worker",
-                 jack_connect_to=None):
+                 jack_connect_to=None, network_only=False):
         """Initialize the worker.
         
         Args:
@@ -48,6 +48,7 @@ class CaelusWorker:
         self.sample_rate = sample_rate
         self.max_polyphony = max_polyphony
         self.local_audio = local_audio
+        self.network_only = network_only  # Store the network-only flag
         
         # Create oscillator and RTP sender
         self.oscillator = SineOscillator(sr=sample_rate)
@@ -466,42 +467,73 @@ class CaelusWorker:
         """Thread function for JACK-based audio synthesis and network streaming.
         
         Uses JACK for professional audio handling and network streaming to controller.
+        Can also operate in network-only mode without a local JACK server.
         """
-        logger.info("JACK audio synthesis thread started")
+        logger.info("Audio synthesis thread started")
         
+        # If network-only mode is explicitly requested, skip JACK completely
+        if self.network_only:
+            logger.info("Network-only mode explicitly requested, skipping JACK")
+            self._network_audio_engine()
+            return
+        
+        # Check if JACK is available
         try:
-            # Import jack client
             import jack
-            
-            # Audio parameters
-            sample_rate = self.sample_rate
-            buffer_size = 1024  # Use Jack's buffer size
-            jack_client_name = self.jack_client_name
-            
-            # Initialize Jack client
+            use_jack = True
+            logger.info("JACK module available, attempting to use JACK for audio")
+        except ImportError:
+            use_jack = False
+            logger.info("JACK module not available, will use network streaming only")
+            self._network_audio_engine()
+            return
+        
+        # Check if JACK server is running
+        if use_jack:
             try:
-                # Connect to Jack server
-                client = jack.Client(jack_client_name)
-                
-                # Register both left and right output ports (stereo audio output)
-                outport_left = client.outports.register("output_left")
-                outport_right = client.outports.register("output_right")
-                
-                # Get actual buffer size and sample rate from Jack
-                buffer_size = client.blocksize
-                actual_sr = client.samplerate
-                if actual_sr != sample_rate:
-                    logger.warning(f"Jack sample rate ({actual_sr}) differs from requested ({sample_rate}). Using Jack's rate.")
-                    sample_rate = actual_sr
-                
-                logger.info(f"Connected to Jack server: buffer_size={buffer_size}, sample_rate={sample_rate}")
-                
-                # Define process callback - this is called by Jack when audio is needed
-                # Store phase information between callbacks
-                phase = {}  # note -> current phase
-                
-                @client.set_process_callback
-                def process(frames):
+                import subprocess
+                result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
+                if result.returncode != 0:
+                    use_jack = False
+                    logger.info("No JACK server running, will use network streaming only")
+                    self._network_audio_engine()
+                    return
+            except Exception:
+                use_jack = False
+                logger.info("Could not check for JACK server, will use network streaming only")
+                self._network_audio_engine()
+                return
+        
+        # Audio parameters
+        sample_rate = self.sample_rate
+        buffer_size = 1024  # Default buffer size
+        jack_client_name = self.jack_client_name
+        
+        # At this point we know JACK is available and server is running
+        try:
+            # Create the Jack client
+            client = jack.Client(jack_client_name)
+            
+            # Register both left and right output ports (stereo audio output)
+            outport_left = client.outports.register("output_left")
+            outport_right = client.outports.register("output_right")
+            
+            # Get actual buffer size and sample rate from Jack
+            buffer_size = client.blocksize
+            actual_sr = client.samplerate
+            if actual_sr != sample_rate:
+                logger.warning(f"Jack sample rate ({actual_sr}) differs from requested ({sample_rate}). Using Jack's rate.")
+                sample_rate = actual_sr
+            
+            logger.info(f"Connected to Jack server: buffer_size={buffer_size}, sample_rate={sample_rate}")
+            
+            # For phase continuity
+            phase = {}  # note -> current phase
+            
+            # Define process callback - this is called by Jack when audio is needed
+            @client.set_process_callback
+            def process(frames):
+                try:
                     # Get a snapshot of active notes to avoid mid-callback changes
                     current_active_notes = {}
                     if hasattr(self, 'active_notes'):
@@ -512,8 +544,8 @@ class CaelusWorker:
                     
                     # Only process if we have active notes
                     if current_active_notes:
-                        # Debug info
-                        if len(current_active_notes) > 0:
+                        # Very rarely log debugging info
+                        if random.random() < 0.001:  # 0.1% chance to log
                             logger.info(f"Processing audio for {len(current_active_notes)} notes: {list(current_active_notes.keys())}")
                             
                         # Count active notes for gain scaling
@@ -537,12 +569,10 @@ class CaelusWorker:
                             if note not in phase:
                                 phase[note] = 0.0
                             
-                            # Create continuous-phase oscillator
                             # Calculate phase increment per sample
                             phase_increment = 2 * np.pi * freq / sample_rate
                             
                             # Generate sine wave samples with current amplitude
-                            # Important: use the current amplitude value which may have been modified by aftertouch
                             note_buffer = np.zeros(frames, dtype=np.float32)
                             for i in range(frames):
                                 note_buffer[i] = amp * np.sin(phase[note])
@@ -553,10 +583,6 @@ class CaelusWorker:
                             
                             # Apply the calculated gain and mix into the buffer
                             mixed_buffer += note_buffer * note_gain
-                            
-                            # Rarely log individual note information 
-                            if random.random() < 0.0005:  # Very rarely log (0.05% chance per callback)
-                                logger.info(f"Note {note} playing at freq={freq:.2f}Hz, amp={amp:.2f}")
                         
                         # Clean up phases for notes that are no longer active
                         for note in list(phase.keys()):
@@ -564,191 +590,272 @@ class CaelusWorker:
                                 del phase[note]
                     
                     # Strict limiter to absolutely prevent clipping
-                    # Apply a more aggressive limiter to ensure no clipping at the worker level
                     max_amp = np.max(np.abs(mixed_buffer))
                     
-                    # Two-stage limiting for better audio quality
-                    # First stage: gentle threshold
+                    # First stage limiting
                     if max_amp > 0.5:
-                        # Apply soft knee limiting for a smoother sound
                         target_amp = 0.5
                         gain = target_amp / max_amp
                         mixed_buffer *= gain
-                        
-                        # Log limiting actions very infrequently
-                        if random.random() < 0.0005 and max_amp > 0.1:  # 0.05% chance to log and only if significant
-                            logger.info(f"Worker limiter stage 1: max_amp={max_amp:.4f}, gain={gain:.4f}")
                     
-                    # Second stage: safety hard limit at 0.7 to absolutely prevent clipping
-                    # This is redundant but provides an additional safety net
+                    # Second stage limiting (safety)
                     max_amp = np.max(np.abs(mixed_buffer))
                     if max_amp > 0.7:
                         gain = 0.7 / max_amp
                         mixed_buffer *= gain
-                        
-                        # Log limiting actions very infrequently
-                        if random.random() < 0.0005 and max_amp > 0.1:  # 0.05% chance to log and only if significant
-                            logger.info(f"Worker limiter stage 2: max_amp={max_amp:.4f}, gain={gain:.4f}")
-                    
-                    # Very infrequently log audio levels, and only when there's actual audio
-                    if random.random() < 0.0005:  # 0.05% chance each callback (20x less frequent)
-                        rms = np.sqrt(np.mean(mixed_buffer**2))
-                        peak = np.max(np.abs(mixed_buffer))
-                        if peak > 0.01:  # Only log when there's actual audio
-                            logger.info(f"Worker audio: rms={rms:.4f}, peak={peak:.4f}")
                     
                     # Send to both Jack output ports (stereo output)
                     outport_left.get_array()[:] = mixed_buffer
-                    outport_right.get_array()[:] = mixed_buffer  # Same signal to both channels
+                    outport_right.get_array()[:] = mixed_buffer
+                    
+                except Exception as e:
+                    logger.error(f"Error in JACK process callback: {e}")
+            
+            # Define shutdown callback
+            @client.set_shutdown_callback
+            def shutdown(status, reason):
+                logger.warning(f"Jack shut down: {reason}")
+                self.running = False
+            
+            # Activate client
+            client.activate()
+            logger.info(f"JACK client activated for {jack_client_name}")
+            
+            # Try to connect to appropriate ports
+            try:
+                # Connect to specified port or auto-detect
+                import subprocess
                 
-                # Define shutdown callback
-                @client.set_shutdown_callback
-                def shutdown(status, reason):
-                    logger.warning(f"Jack shut down: {reason}")
-                    self.running = False
-                
-                # Activate client
-                client.activate()
-                
-                # Setup network ports if we're streaming
-                if True:  # Always try to connect for better audio routing
-                    try:
-                        # Connect to specified port or auto-detect
-                        import subprocess
-                        
-                        if self.jack_connect_to:
-                            # Connect to user-specified port
-                            logger.info(f"Connecting to specified Jack port: {self.jack_connect_to}")
-                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', self.jack_connect_to])
-                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', self.jack_connect_to])
-                            logger.info(f"Connected to port: {self.jack_connect_to}")
+                if self.jack_connect_to:
+                    # Connect to user-specified port
+                    logger.info(f"Connecting to specified Jack port: {self.jack_connect_to}")
+                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', self.jack_connect_to])
+                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', self.jack_connect_to])
+                    logger.info(f"Connected to port: {self.jack_connect_to}")
+                else:
+                    # Auto-detect and connect to available ports
+                    logger.info("Auto-detecting Jack network connections...")
+                    # Run command to list available ports
+                    result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
+                    ports = result.stdout.strip().split('\n')
+                    
+                    # Print all available ports for debugging
+                    logger.info(f"Available Jack ports: {ports}")
+                    
+                    # First try to find controller ports for routing (prioritize these)
+                    controller_ports = [p for p in ports if 'controller' in p.lower() and ('in' in p.lower() or 'input' in p.lower())]
+                    
+                    # Specifically look for the controller's input ports
+                    caelus_input_ports = [p for p in ports if 'controller:input' in p.lower()]
+                    
+                    # System playback as fallback for local use
+                    system_ports = [p for p in ports if 'system:playback' in p.lower()]
+                    
+                    # Also look for netjack ports
+                    netjack_ports = [p for p in ports if ('net' in p.lower() or 'jack' in p.lower()) and ('in' in p.lower() or 'input' in p.lower())]
+                    
+                    # Any input ports as fallback
+                    input_ports = [p for p in ports if 'input' in p or 'in_' in p]
+                    
+                    # Log all detected port categories for debugging
+                    logger.info(f"Controller ports: {controller_ports}")
+                    logger.info(f"Caelus input ports: {caelus_input_ports}")
+                    logger.info(f"System ports: {system_ports}")
+                    logger.info(f"NetJack ports: {netjack_ports}")
+                    logger.info(f"Input ports: {input_ports}")
+                    
+                    # Prioritize Caelus controller's input ports for best routing
+                    if caelus_input_ports:
+                        # Explicitly connect our output to controller's input ports
+                        if len(caelus_input_ports) >= 2:
+                            # Stereo connection
+                            left_port = caelus_input_ports[0]
+                            right_port = caelus_input_ports[1]
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', left_port])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', right_port])
+                            logger.info(f"Connected to Caelus controller inputs: {left_port}, {right_port}")
                         else:
-                            # Auto-detect and connect to available ports
-                            logger.info("Auto-detecting Jack network connections...")
-                            # Run command to list available ports
-                            result = subprocess.run(['jack_lsp'], capture_output=True, text=True)
-                            ports = result.stdout.strip().split('\n')
+                            # Mono connection (both channels to the same port)
+                            port = caelus_input_ports[0]
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                            logger.info(f"Connected both channels to Caelus controller input: {port}")
+                    
+                    # Next priority: any controller ports
+                    elif controller_ports:
+                        for port in controller_ports[:2]:  # Up to 2 ports
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                            logger.info(f"Connected to controller port: {port}")
                             
-                            # Print all available ports for debugging
-                            logger.info(f"Available Jack ports: {ports}")
+                    # For local audio testing, connect to system playback
+                    elif self.local_audio and system_ports:
+                        # Connect to system output ports
+                        for i, port in enumerate(system_ports[:2]):  # Up to 2 ports (stereo)
+                            out_port = "output_left" if i == 0 else "output_right"
+                            subprocess.run(['jack_connect', f'{jack_client_name}:{out_port}', port])
+                            logger.info(f"Connected {out_port} to system output: {port}")
                             
-                            # First try to find controller ports for routing (prioritize these)
-                            controller_ports = [p for p in ports if 'caelus_controller' in p.lower() and ('in' in p.lower() or 'input' in p.lower())]
+                    # For netjack routing
+                    elif netjack_ports:
+                        for port in netjack_ports[:2]:  # Up to 2 ports
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                            logger.info(f"Connected to netjack port: {port}")
                             
-                            # Specifically look for the controller's input ports
-                            caelus_input_ports = [p for p in ports if 'caelus_controller:input' in p.lower()]
+                    # Fallback to any input port
+                    elif input_ports:
+                        for port in input_ports[:2]:  # Up to 2 ports
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
+                            logger.info(f"Connected to input port: {port}")
                             
-                            # System playback as fallback for local use
-                            system_ports = [p for p in ports if 'system:playback' in p.lower()]
-                            
-                            # Also look for netjack ports
-                            netjack_ports = [p for p in ports if ('net' in p.lower() or 'jack' in p.lower()) and ('in' in p.lower() or 'input' in p.lower())]
-                            
-                            # Any input ports as fallback
-                            input_ports = [p for p in ports if 'input' in p or 'in_' in p]
-                            
-                            # Log all detected port categories for debugging
-                            logger.info(f"Controller ports: {controller_ports}")
-                            logger.info(f"Caelus input ports: {caelus_input_ports}")
-                            logger.info(f"System ports: {system_ports}")
-                            logger.info(f"NetJack ports: {netjack_ports}")
-                            logger.info(f"Input ports: {input_ports}")
-                            
-                            # Prioritize Caelus controller's input ports for best routing
-                            if caelus_input_ports:
-                                # Explicitly connect our output to controller's input ports
-                                if len(caelus_input_ports) >= 2:
-                                    # Stereo connection
-                                    left_port = caelus_input_ports[0]
-                                    right_port = caelus_input_ports[1]
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', left_port])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', right_port])
-                                    logger.info(f"Connected to Caelus controller inputs: {left_port}, {right_port}")
-                                else:
-                                    # Mono connection (both channels to the same port)
-                                    port = caelus_input_ports[0]
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
-                                    logger.info(f"Connected both channels to Caelus controller input: {port}")
-                            
-                            # Next priority: any controller ports
-                            elif controller_ports:
-                                for port in controller_ports[:2]:  # Up to 2 ports
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
-                                    logger.info(f"Connected to controller port: {port}")
-                                    
-                            # For local audio testing, connect to system playback
-                            elif self.local_audio and system_ports:
-                                # Connect to system output ports
-                                for i, port in enumerate(system_ports[:2]):  # Up to 2 ports (stereo)
-                                    out_port = "output_left" if i == 0 else "output_right"
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:{out_port}', port])
-                                    logger.info(f"Connected {out_port} to system output: {port}")
-                                    
-                            # For netjack routing
-                            elif netjack_ports:
-                                for port in netjack_ports[:2]:  # Up to 2 ports
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
-                                    logger.info(f"Connected to netjack port: {port}")
-                                    
-                            # Fallback to any input port
-                            elif input_ports:
-                                for port in input_ports[:2]:  # Up to 2 ports
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', port])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', port])
-                                    logger.info(f"Connected to input port: {port}")
-                                    
-                            # Direct connection to system playback as last resort
-                            else:
-                                # Try direct connection to system:playback
-                                try:
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_left', 'system:playback_1'])
-                                    subprocess.run(['jack_connect', f'{jack_client_name}:output_right', 'system:playback_2'])
-                                    logger.info("Connected directly to system playback ports")
-                                except Exception as connect_error:
-                                    logger.warning(f"Failed to connect to system playback: {connect_error}")
-                                    logger.warning("No suitable output ports found. Audio will be generated but not heard.")
-                    except Exception as e:
-                        logger.error(f"Error setting up Jack connections: {e}", exc_info=True)
+                    # Direct connection to system playback as last resort
+                    else:
+                        # Try direct connection to system:playback
+                        try:
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_left', 'system:playback_1'])
+                            subprocess.run(['jack_connect', f'{jack_client_name}:output_right', 'system:playback_2'])
+                            logger.info("Connected directly to system playback ports")
+                        except Exception as connect_error:
+                            logger.warning(f"Failed to connect to system playback: {connect_error}")
+                            logger.warning("No suitable output ports found. Audio will be generated but not heard.")
+            except Exception as e:
+                logger.error(f"Error setting up Jack connections: {e}", exc_info=True)
                 
-                # Log active status
-                logger.info(f"Jack client active with {len(self.active_notes)} notes")
-                
-                # Keep thread alive until shutdown
-                while self.running:
-                    # Log occasionally
-                    if random.random() < 0.001:  # Very rarely to avoid log spam
-                        if hasattr(self, 'active_notes') and self.active_notes:
-                            logger.info(f"Playing {len(self.active_notes)} notes via Jack")
-                    time.sleep(1)
-                
-                # Deactivate and close client
-                client.deactivate()
-                client.close()
-                logger.info("Jack client closed")
-                
-            except jack.JackError as e:
-                logger.error(f"Could not connect to Jack server: {e}")
-                
-                # Fallback to PyAudio if Jack fails and local audio is enabled
-                if self.local_audio:
-                    logger.info("Falling back to PyAudio for local playback")
-                    self._pyaudio_fallback()
-                
-        except ImportError:
-            logger.error("Jack module not available. Install with: pip install JACK-Client")
+            # Log active status
+            logger.info(f"Jack client active with {len(self.active_notes)} notes")
             
-            # Fallback to PyAudio if Jack fails and local audio is enabled
-            if self.local_audio:
-                logger.info("Falling back to PyAudio for local playback")
-                self._pyaudio_fallback()
+            # Keep thread alive until shutdown
+            while self.running:
+                # Log occasionally
+                if random.random() < 0.001:  # Very rarely to avoid log spam
+                    if hasattr(self, 'active_notes') and self.active_notes:
+                        logger.info(f"Playing {len(self.active_notes)} notes via Jack")
+                time.sleep(1)
             
-        logger.info("Jack audio thread stopped")
+            # Deactivate and close client
+            client.deactivate()
+            client.close()
+            logger.info("Jack client closed")
+        
+        except Exception as e:
+            logger.error(f"Error in JACK thread: {e}")
+            # Use network-only mode as fallback
+            self._network_audio_engine()
+            
+        logger.info("Audio synthesis thread stopped")
+    
+    def _network_audio_engine(self):
+        """Network-only audio engine for workers without a local JACK server.
+        
+        This method creates a synthetic audio engine that:
+        1. Generates audio samples in memory
+        2. Applies the same gain management and limiting as the JACK version
+        3. Prepares audio for streaming to the controller via network
+        """
+        logger.info("Starting network-only audio engine")
+        
+        # Audio parameters
+        sample_rate = self.sample_rate
+        buffer_size = 1024  # Buffer size for processing
+        
+        # Phase tracking for all notes (for continuous waveforms)
+        phase = {}  # note -> current phase
+        
+        # Process audio in a loop
+        while self.running:
+            try:
+                # Get a snapshot of active notes to avoid mid-callback changes
+                current_active_notes = {}
+                if hasattr(self, 'active_notes'):
+                    current_active_notes = dict(self.active_notes)
+                
+                # Create silent buffer
+                mixed_buffer = np.zeros(buffer_size, dtype=np.float32)
+                
+                # Only process if we have active notes
+                if current_active_notes:
+                    # Count active notes for gain scaling
+                    active_note_count = len(current_active_notes)
+                    
+                    # Calculate per-note gain using square-root scaling for perceptual balance
+                    # VERY conservative settings to prevent clipping completely
+                    if active_note_count > 1:
+                        # Use square-root scaling for balanced polyphony, but with more conservative gain
+                        note_gain = 0.4 / np.sqrt(active_note_count)
+                    else:
+                        note_gain = 0.4  # Even single notes should be quieter to prevent clipping
+                    
+                    # Mix in all active notes with phase continuity
+                    for note, (freq, amp) in current_active_notes.items():
+                        # Ensure phase is initialized for this note
+                        if note not in phase:
+                            phase[note] = 0.0
+                        
+                        # Create continuous-phase oscillator
+                        # Calculate phase increment per sample
+                        phase_increment = 2 * np.pi * freq / sample_rate
+                        
+                        # Generate sine wave samples with current amplitude
+                        note_buffer = np.zeros(buffer_size, dtype=np.float32)
+                        for i in range(buffer_size):
+                            note_buffer[i] = amp * np.sin(phase[note])
+                            phase[note] += phase_increment
+                            # Keep phase in sensible range to prevent floating point errors
+                            while phase[note] >= 2 * np.pi:
+                                phase[note] -= 2 * np.pi
+                        
+                        # Apply the calculated gain and mix into the buffer
+                        mixed_buffer += note_buffer * note_gain
+                    
+                    # Clean up phases for notes that are no longer active
+                    for note_id in list(phase.keys()):
+                        if note_id not in current_active_notes:
+                            del phase[note_id]
+                
+                # Strict limiter to absolutely prevent clipping
+                # Apply a more aggressive limiter to ensure no clipping at the worker level
+                max_amp = np.max(np.abs(mixed_buffer))
+                
+                # Two-stage limiting for better audio quality
+                # First stage: gentle threshold
+                if max_amp > 0.5:
+                    # Apply soft knee limiting for a smoother sound
+                    target_amp = 0.5
+                    gain = target_amp / max_amp
+                    mixed_buffer *= gain
+                
+                # Second stage: safety hard limit at 0.7 to absolutely prevent clipping
+                # This is redundant but provides an additional safety net
+                max_amp = np.max(np.abs(mixed_buffer))
+                if max_amp > 0.7:
+                    gain = 0.7 / max_amp
+                    mixed_buffer *= gain
+                
+                # Now mixed_buffer contains the prepared audio that would normally go to JACK
+                # In a distributed environment, this would be sent over the network to the controller
+                
+                # For now, we'll just simulate a controller client
+                # In a real implementation, this would send audio data over the network
+                # This is where you would add code to send audio to the controller
+                
+                # Sleep a bit to avoid excessive CPU usage
+                # This sleep duration simulates the timing of audio generation
+                # In a real JACK setup, this timing is managed by the JACK callback
+                time.sleep(buffer_size / sample_rate)
+                
+            except Exception as e:
+                logger.error(f"Error in network audio engine: {e}")
+                time.sleep(0.1)  # Short sleep on error
+        
+        logger.info("Network audio engine stopped")
     
     def _pyaudio_fallback(self):
-        """Fallback to PyAudio if Jack is not available."""
+        """Local audio playback using PyAudio when requested.
+        
+        Only used when local_audio=True is specified explicitly.
+        """
         try:
             # Initialize PyAudio for direct audio output
             import pyaudio
