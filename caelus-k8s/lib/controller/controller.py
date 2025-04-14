@@ -379,10 +379,11 @@ def main():
     parser.add_argument("--worker-ip", default=None, help="IP address of the worker")
     parser.add_argument("--worker-port", type=int, default=9000, help="OSC port of the worker")
     parser.add_argument("--test", action="store_true", help="Send test notes")
+    parser.add_argument("--offline", action="store_true", help="Run in offline mode (disable audio reception/playback)")
     
     args = parser.parse_args()
     
-    controller = CaelusController(args.rtp_port)
+    controller = CaelusController(args.rtp_port, offline_mode=args.offline)
     
     # Add worker if specified
     if args.worker_ip:

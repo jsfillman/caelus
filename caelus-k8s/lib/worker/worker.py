@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class CaelusWorker:
     """Caelus K8s worker that generates notes based on OSC messages."""
     
-    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=8):
+    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=8, local_audio=False):
         """Initialize the worker.
         
         Args:
@@ -32,15 +32,25 @@ class CaelusWorker:
             osc_port (int): Port to listen on for OSC
             sample_rate (int): Audio sample rate
             max_polyphony (int): Maximum number of simultaneous notes
+            local_audio (bool): If True, play audio locally instead of streaming
         """
         self.osc_ip = osc_ip
         self.osc_port = osc_port
         self.sample_rate = sample_rate
         self.max_polyphony = max_polyphony
+        self.local_audio = local_audio
         
         # Create oscillator and RTP sender
         self.oscillator = SineOscillator(sr=sample_rate)
         self.rtp_sender = RTPSender(sr=sample_rate)
+        
+        # Initialize Pyo server if local audio is enabled
+        if self.local_audio:
+            from pyo import Server
+            self.audio_server = Server(sr=sample_rate, nchnls=2, buffersize=256)
+            self.audio_server.boot()
+            self.audio_server.start()
+            logger.info("Local audio output enabled")
         
         # Create OSC server with custom dispatcher
         self.dispatcher = dispatcher.Dispatcher()
@@ -128,6 +138,16 @@ class CaelusWorker:
                 controller_ip = "127.0.0.1"
                 rtp_port = self.controllers.get(controller_ip, (5000, 0))[0]
                 
+                # If local audio is enabled, stop the local sound
+                if self.local_audio and hasattr(self, 'active_sounds') and note in self.active_sounds:
+                    try:
+                        # Stop the sound and remove from dictionary
+                        self.active_sounds[note].stop()
+                        del self.active_sounds[note]
+                        logger.info(f"Stopped local playback for note {note}")
+                    except Exception as e:
+                        logger.error(f"Error stopping local sound for note {note}: {e}")
+                
                 # Generate release buffer
                 # Store the note in oscillator.active_notes to prevent warnings
                 if note not in self.oscillator.active_notes:
@@ -213,6 +233,18 @@ class CaelusWorker:
                     t = np.linspace(0, duration, int(self.sample_rate * duration), False)
                     audio_buffer = amplitude * np.sin(2 * np.pi * frequency * t)
                     
+                    # If local audio is enabled, play it directly
+                    if self.local_audio:
+                        from pyo import Sine
+                        # Create a sine oscillator and play it
+                        sine = Sine(freq=float(frequency), mul=amplitude).out()
+                        # Store in a dictionary to keep track of active sounds
+                        if not hasattr(self, 'active_sounds'):
+                            self.active_sounds = {}
+                        self.active_sounds[note] = sine
+                        logger.info(f"Playing note {note} locally with frequency {frequency:.2f} Hz")
+                    
+                    # Also stream via RTP as normal
                     # Stream audio in chunks for better playback
                     # Using smaller chunks and longer intervals to prevent controller buffer overflow
                     chunk_size = 512  # Smaller chunks
@@ -235,8 +267,52 @@ class CaelusWorker:
         
         logger.info("Audio render thread stopped")
     
-    def start(self):
-        """Start the worker."""
+    def register_with_controller(self, controller_ip, controller_port=8000):
+        """Register this worker with a controller.
+        
+        Args:
+            controller_ip (str): IP address of the controller
+            controller_port (int): OSC port of the controller
+        """
+        try:
+            # Create a client to communicate with the controller
+            from lib.common.osc import OSCClient, WORKER_READY
+            controller_client = OSCClient(controller_ip, controller_port)
+            
+            # Send WORKER_READY message with our IP, port, and capacity
+            # Use the machine's actual IP address, not 0.0.0.0
+            import socket
+            my_ip = socket.gethostbyname(socket.gethostname())
+            if my_ip == "127.0.0.1":
+                # Try to get a non-localhost IP
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    # Doesn't have to be reachable
+                    s.connect(('10.255.255.255', 1))
+                    my_ip = s.getsockname()[0]
+                except Exception:
+                    pass
+                finally:
+                    s.close()
+            
+            controller_client.client.send_message(WORKER_READY, [my_ip, self.osc_port, self.max_polyphony])
+            logger.info(f"Registered with controller at {controller_ip}:{controller_port}")
+            
+            # Store controller info
+            self.controllers[controller_ip] = (controller_port, time.time())
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error registering with controller: {e}")
+            return False
+
+    def start(self, controller_ip=None, controller_port=8000):
+        """Start the worker.
+        
+        Args:
+            controller_ip (str, optional): IP of the controller to register with
+            controller_port (int, optional): Port of the controller
+        """
         # Start OSC server
         self.osc_server.start()
         
@@ -245,6 +321,20 @@ class CaelusWorker:
         self.render_thread = threading.Thread(target=self._render_thread_func)
         self.render_thread.daemon = True
         self.render_thread.start()
+        
+        # Register with controller if provided
+        if controller_ip:
+            self.register_with_controller(controller_ip, controller_port)
+            
+            # Set up periodic re-registration in case controller restarts
+            def periodic_registration():
+                while self.running:
+                    self.register_with_controller(controller_ip, controller_port)
+                    time.sleep(60)  # Re-register every minute
+                    
+            self.register_thread = threading.Thread(target=periodic_registration)
+            self.register_thread.daemon = True
+            self.register_thread.start()
         
         logger.info("Worker started")
     
@@ -263,6 +353,25 @@ class CaelusWorker:
             # Close RTP sender
             self.rtp_sender.close()
             
+            # Clean up audio server if local audio was enabled
+            if self.local_audio and hasattr(self, 'audio_server'):
+                # Stop any remaining active sounds
+                if hasattr(self, 'active_sounds'):
+                    for note, sound in list(self.active_sounds.items()):
+                        try:
+                            sound.stop()
+                        except Exception as e:
+                            logger.error(f"Error stopping sound for note {note}: {e}")
+                    self.active_sounds.clear()
+                
+                # Shut down the audio server
+                try:
+                    self.audio_server.stop()
+                    self.audio_server.shutdown()
+                    logger.info("Local audio server shut down")
+                except Exception as e:
+                    logger.error(f"Error shutting down audio server: {e}")
+            
             logger.info("Worker stopped")
         except Exception as e:
             logger.error(f"Error stopping worker: {e}")
@@ -274,11 +383,14 @@ def main():
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on for OSC messages")
     parser.add_argument("--sr", type=int, default=44100, help="Audio sample rate")
     parser.add_argument("--polyphony", type=int, default=8, help="Maximum polyphony")
+    parser.add_argument("--local-audio", action="store_true", help="Enable local audio output")
+    parser.add_argument("--controller-ip", default="127.0.0.1", help="IP address of the controller to register with")
+    parser.add_argument("--controller-port", type=int, default=8000, help="OSC port of the controller")
     
     args = parser.parse_args()
     
-    worker = CaelusWorker(args.ip, args.port, args.sr, args.polyphony)
-    worker.start()
+    worker = CaelusWorker(args.ip, args.port, args.sr, args.polyphony, args.local_audio)
+    worker.start(args.controller_ip, args.controller_port)
     
     try:
         # Keep the main thread alive
