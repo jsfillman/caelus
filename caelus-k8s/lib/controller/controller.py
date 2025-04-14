@@ -103,7 +103,7 @@ class CaelusController:
         
         Args:
             address (str): OSC address
-            *args: OSC arguments (worker_ip, osc_port, capacity)
+            *args: OSC arguments (worker_ip, osc_port, capacity, jack_client_name)
         """
         try:
             # Print the raw arguments to debug
@@ -117,8 +117,11 @@ class CaelusController:
             osc_port = int(args[1])  # Make sure port is an integer
             capacity = int(args[2])  # Make sure capacity is an integer
             
+            # Get JACK client name if provided (4th argument), otherwise use a default
+            jack_client_name = args[3] if len(args) > 3 else f"worker_{osc_port}"
+            
             # Print for debugging
-            logger.info(f"Parsed worker info: IP={worker_ip}, Port={osc_port}, Capacity={capacity}")
+            logger.info(f"Parsed worker info: IP={worker_ip}, Port={osc_port}, Capacity={capacity}, JACK={jack_client_name}")
             
             # Create a unique worker ID to avoid worker IP collisions 
             # when multiple workers run on the same host
@@ -131,17 +134,26 @@ class CaelusController:
                     self.workers[worker_id].note_capacity = capacity
                     self.workers[worker_id].last_ping = time.time()
                     self.workers[worker_id].status = "ready"
-                    logger.info(f"Worker updated: {worker_id}, capacity: {capacity}")
+                    self.workers[worker_id].jack_client_name = jack_client_name
+                    logger.info(f"Worker updated: {worker_id}, capacity: {capacity}, JACK: {jack_client_name}")
                 else:
                     # Add new worker
                     worker = WorkerConfig(worker_ip, osc_port, capacity)
                     worker.last_ping = time.time()
                     worker.status = "ready"
+                    worker.jack_client_name = jack_client_name
                     self.workers[worker_id] = worker
-                    logger.info(f"New worker added: {worker_id}, capacity: {capacity}")
+                    logger.info(f"New worker added: {worker_id}, capacity: {capacity}, JACK: {jack_client_name}")
+                    
+                # Create dedicated JACK input port for this worker if using JACK
+                if hasattr(self, 'rtp_receiver') and hasattr(self.rtp_receiver, 'jack_client'):
+                    # Use the Jack client name for the input port
+                    self.rtp_receiver.create_worker_input_port(jack_client_name)
+                    # Trigger port connections to be updated
+                    self.rtp_receiver.setup_jack_outputs()
                     
                 # Log all currently registered workers for debugging
-                worker_info = [f"{id} (capacity: {w.note_capacity}, active_notes: {len(w.active_notes)})" 
+                worker_info = [f"{id} (capacity: {w.note_capacity}, active_notes: {len(w.active_notes)}, JACK: {getattr(w, 'jack_client_name', 'unknown')})" 
                              for id, w in self.workers.items()]
                 logger.info(f"Current workers: {worker_info}")
                 logger.info(f"Total workers now registered: {len(self.workers)}")
@@ -247,9 +259,16 @@ class CaelusController:
             
             if available_workers:
                 # We have workers with free capacity
-                # Choose the worker with the least active notes for best load balancing
-                worker_ip = min(available_workers, key=lambda ip: len(self.workers[ip].active_notes))
-                logger.info(f"Selected worker {worker_ip} based on free capacity")
+                # Choose the worker with the lowest load percentage (active notes / capacity)
+                # This ensures better distribution across workers with different capacities
+                def load_percentage(worker_ip):
+                    worker = self.workers[worker_ip]
+                    active = len(worker.active_notes)
+                    capacity = worker.note_capacity
+                    return active / capacity if capacity > 0 else 1.0
+                
+                worker_ip = min(available_workers, key=load_percentage)
+                logger.info(f"Selected worker {worker_ip} based on load percentage: {load_percentage(worker_ip):.2f}")
                 return worker_ip, None
             
             # Step 2: No workers have free capacity, need to perform note stealing

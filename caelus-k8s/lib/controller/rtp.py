@@ -512,16 +512,16 @@ class RTPReceiver:
             # Create Jack client
             self.jack_client = jack.Client(self.jack_client_name)
             
-            # Create both input and output ports for proper audio routing
-            # Create stereo input ports to receive audio from workers
-            inport_left = self.jack_client.inports.register("input_left")
-            inport_right = self.jack_client.inports.register("input_right")
-            self.jack_inports = [inport_left, inport_right]
-            
-            # Create stereo output ports to send directly to system playback
+            # Create stereo output ports for controller's main output 
             outport_left = self.jack_client.outports.register("output_left")
             outport_right = self.jack_client.outports.register("output_right")
             self.jack_outports = [outport_left, outport_right]
+            
+            # Dictionary to store dedicated worker input ports
+            self.worker_input_ports = {}  # worker_name -> port object
+            
+            # Active notes count for gain calculation
+            self.active_notes_count = 0
             
             # Get actual buffer size and sample rate from Jack
             self.buffer_size = self.jack_client.blocksize
@@ -532,86 +532,106 @@ class RTPReceiver:
             
             # Set up audio output if not in offline mode
             try:
-                # Set up PyAudio as a fallback
-                import pyaudio
-                self.pyaudio = pyaudio.PyAudio()
-                self.stream = self.pyaudio.open(
-                    format=pyaudio.paFloat32,
-                    channels=1,
-                    rate=int(self.sr),
-                    output=True,
-                    frames_per_buffer=self.buffer_size
-                )
-                logger.info(f"Set up PyAudio output stream at {self.sr} Hz")
-                
-                # Set up a buffer for accumulating audio data
-                self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
-                self.buffer_position = 0
-                
                 # For DC blocking filter
                 self.prev_sample_left = 0.0
                 self.prev_output_left = 0.0
                 self.prev_sample_right = 0.0
                 self.prev_output_right = 0.0
                 
-                # Define process callback with enhanced audio routing
+                # Define process callback with enhanced audio routing and proper mixing algorithm
                 @self.jack_client.set_process_callback
                 def process(frames):
-                    # Get audio data from input ports
-                    audio_left = inport_left.get_array()
-                    audio_right = inport_right.get_array()
+                    # Create silent output buffer
+                    mixed_left = np.zeros(frames, dtype=np.float32)
+                    mixed_right = np.zeros(frames, dtype=np.float32)
                     
-                    # Apply audio processing to both channels
-                    # First apply DC blocking filter to remove any buzzing
-                    filtered_left = np.zeros_like(audio_left)
-                    filtered_right = np.zeros_like(audio_right)
-                    alpha = 0.995  # Filter coefficient
+                    # Count active input ports with non-zero audio
+                    active_ports = 0
+                    all_ports = list(self.worker_input_ports.values())
                     
-                    # Process left channel
-                    for i in range(len(audio_left)):
-                        filtered_left[i] = alpha * (self.prev_output_left + audio_left[i] - self.prev_sample_left)
-                        self.prev_sample_left = audio_left[i]
-                        self.prev_output_left = filtered_left[i]
+                    # First pass to count active ports
+                    for input_port in all_ports:
+                        # Get input data
+                        in_data = input_port.get_array()
+                        # Check if there's actual audio (not just silence)
+                        if np.max(np.abs(in_data)) > 0.01:
+                            active_ports += 1
+                    
+                    # Update active notes count (with smoothing)
+                    if active_ports > 0:
+                        # Smoothly update active notes count
+                        self.active_notes_count = 0.7 * self.active_notes_count + 0.3 * active_ports
+                        if self.active_notes_count < 1.0:
+                            self.active_notes_count = 1.0
+                    
+                    # Calculate gain based on active notes
+                    # Use square-root scaling for perceptual balance
+                    if self.active_notes_count > 1:
+                        gain = 1.0 / np.sqrt(self.active_notes_count)
+                    else:
+                        gain = 1.0
                         
-                    # Process right channel    
-                    for i in range(len(audio_right)):
-                        filtered_right[i] = alpha * (self.prev_output_right + audio_right[i] - self.prev_sample_right)
-                        self.prev_sample_right = audio_right[i]
-                        self.prev_output_right = filtered_right[i]
+                    # Apply a small safety margin to prevent clipping
+                    gain *= 0.9
                     
-                    # Apply noise gate to prevent silent buzzing
+                    # Second pass to mix audio with calculated gain and DC blocking filter
+                    for input_port in all_ports:
+                        # Get input data
+                        in_data = input_port.get_array()
+                        
+                        # Apply DC blocking filter to prevent buzzing
+                        filtered_data = np.zeros_like(in_data)
+                        alpha = 0.995  # Filter coefficient
+                        prev_sample = 0.0
+                        prev_output = 0.0
+                        
+                        for i in range(len(in_data)):
+                            filtered_data[i] = alpha * (prev_output + in_data[i] - prev_sample)
+                            prev_sample = in_data[i]
+                            prev_output = filtered_data[i]
+                        
+                        # Apply gain and add to mix
+                        mixed_left += filtered_data * gain
+                        mixed_right += filtered_data * gain
+                    
+                    # Apply soft limiter to prevent clipping
+                    # This uses a simple tanh-based soft clipper
+                    peak_left = np.max(np.abs(mixed_left))
+                    peak_right = np.max(np.abs(mixed_right))
+                    peak_level = max(peak_left, peak_right)
+                    
+                    if peak_level > 0.95:
+                        # Apply more aggressive limiting if we're close to clipping
+                        limiting_gain = 0.95 / peak_level
+                        mixed_left *= limiting_gain
+                        mixed_right *= limiting_gain
+                        
+                        # Log the limiting action occasionally
+                        if random.random() < 0.01:  # 1% chance to log
+                            logger.info(f"Limiter activated: peak={peak_level:.2f}, gain={limiting_gain:.2f}")
+                    
+                    # Apply a noise gate to prevent silent buzzing
                     noise_threshold = 0.001
-                    for i in range(len(filtered_left)):
-                        if abs(filtered_left[i]) < noise_threshold:
-                            filtered_left[i] = 0.0
-                    for i in range(len(filtered_right)):
-                        if abs(filtered_right[i]) < noise_threshold:
-                            filtered_right[i] = 0.0
-                            
-                    # Apply gain boost for better audibility (but not too much to avoid clipping)
-                    filtered_left *= 2.0
-                    filtered_right *= 2.0
+                    for i in range(len(mixed_left)):
+                        if abs(mixed_left[i]) < noise_threshold:
+                            mixed_left[i] = 0.0
+                    for i in range(len(mixed_right)):
+                        if abs(mixed_right[i]) < noise_threshold:
+                            mixed_right[i] = 0.0
                     
-                    # Soft limiter to prevent clipping
-                    for buffer in [filtered_left, filtered_right]:
-                        max_amp = np.max(np.abs(buffer))
-                        if max_amp > 0.9:
-                            gain = 0.9 / max_amp
-                            buffer *= gain
-                            
                     # Route audio to output ports
-                    outport_left.get_array()[:] = filtered_left
-                    outport_right.get_array()[:] = filtered_right
+                    outport_left.get_array()[:] = mixed_left
+                    outport_right.get_array()[:] = mixed_right
                     
                     # Log audio levels occasionally to help diagnose issues
                     if random.random() < 0.01:  # 1% of callbacks
-                        rms_l = np.sqrt(np.mean(np.square(filtered_left)))
-                        peak_l = np.max(np.abs(filtered_left))
-                        rms_r = np.sqrt(np.mean(np.square(filtered_right)))
-                        peak_r = np.max(np.abs(filtered_right))
+                        rms_l = np.sqrt(np.mean(np.square(mixed_left)))
+                        peak_l = np.max(np.abs(mixed_left))
+                        rms_r = np.sqrt(np.mean(np.square(mixed_right)))
+                        peak_r = np.max(np.abs(mixed_right))
                         
                         if peak_l > 0.01 or peak_r > 0.01:  # Only log when there's actual audio
-                            logger.info(f"Jack audio: rms={rms_l:.4f}/{rms_r:.4f}, peak={peak_l:.4f}/{peak_r:.4f}")
+                            logger.info(f"Jack audio: rms={rms_l:.4f}/{rms_r:.4f}, peak={peak_l:.4f}/{peak_r:.4f}, active_notes={self.active_notes_count:.1f}")
                 
                 # Define shutdown callback
                 @self.jack_client.set_shutdown_callback
@@ -632,7 +652,7 @@ class RTPReceiver:
                 return True
                 
             except Exception as e:
-                logger.error(f"Error setting up PyAudio output: {e}", exc_info=True)
+                logger.error(f"Error setting up JACK audio: {e}", exc_info=True)
                 return False
                 
         except ImportError:
@@ -642,8 +662,43 @@ class RTPReceiver:
             logger.error(f"Error setting up Jack client: {e}", exc_info=True)
             return False
     
+    def create_worker_input_port(self, worker_name):
+        """Create a dedicated input port for a worker.
+        
+        Args:
+            worker_name (str): Name of the worker (e.g., "worker1")
+            
+        Returns:
+            bool: True if port was created successfully, False otherwise
+        """
+        if not self.jack_client:
+            logger.warning("Jack client not available, can't create worker input port")
+            return False
+            
+        try:
+            # Create unique port name based on worker name
+            port_name = f"input_{worker_name}"
+            
+            # Check if port already exists
+            if worker_name in self.worker_input_ports:
+                logger.info(f"Input port for worker '{worker_name}' already exists")
+                return True
+            
+            # Register new input port with Jack
+            input_port = self.jack_client.inports.register(port_name)
+            
+            # Store port in dictionary
+            self.worker_input_ports[worker_name] = input_port
+            
+            logger.info(f"Created input port '{port_name}' for worker '{worker_name}'")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create input port for worker '{worker_name}': {e}")
+            return False
+    
     def setup_jack_outputs(self):
-        """Connect Jack outputs to system playback ports."""
+        """Connect Jack outputs to system playback ports and connect worker outputs to our inputs."""
         try:
             import subprocess
             import random
@@ -657,22 +712,50 @@ class RTPReceiver:
             system_ports = [p for p in ports if 'system:playback' in p]
             logger.info(f"System playback ports: {system_ports}")
             
-            # Look for worker output ports to connect to our input ports
-            worker_ports = [p for p in ports if 'caelus_worker:output' in p or 'worker' in p.lower() and 'out' in p.lower()]
+            # Look for worker output ports to connect to our dedicated input ports
+            worker_ports = [p for p in ports if ('worker' in p.lower() and 'output' in p.lower()) or 
+                                             ('worker' in p.lower() and 'out' in p.lower())]
             logger.info(f"Worker output ports: {worker_ports}")
             
-            # First connect workers to our input if any are found
-            if worker_ports and hasattr(self, 'jack_inports') and self.jack_inports:
-                for i, port in enumerate(worker_ports[:2]):  # Up to 2 ports for stereo
-                    in_port = self.jack_inports[min(i, len(self.jack_inports)-1)]
-                    in_port_name = f'{self.jack_client_name}:{in_port.shortname}'
-                    try:
-                        subprocess.run(['jack_connect', port, in_port_name])
-                        logger.info(f"Connected worker {port} to controller input {in_port_name}")
-                    except Exception as e:
-                        logger.warning(f"Failed to connect {port} to {in_port_name}: {e}")
+            # Connect each worker output to its dedicated input port on the controller
+            for worker_port in worker_ports:
+                # Extract worker name from port name 
+                # Try to parse out the worker name from port like "worker1:output_left"
+                try:
+                    worker_name = None
+                    if ':' in worker_port:
+                        client_name = worker_port.split(':')[0]
+                        if client_name.startswith('worker'):
+                            worker_name = client_name
+                    
+                    # If we couldn't extract it but it has "worker" in the name, use a generic name
+                    if not worker_name:
+                        # Create a unique name based on the port
+                        worker_name = f"worker_{hash(worker_port) % 1000}"
+                    
+                    # Ensure we have an input port for this worker
+                    if worker_name not in self.worker_input_ports:
+                        self.create_worker_input_port(worker_name)
+                    
+                    # Connect the worker output to our dedicated input
+                    if worker_name in self.worker_input_ports:
+                        input_port = self.worker_input_ports[worker_name]
+                        in_port_name = f'{self.jack_client_name}:{input_port.shortname}'
+                        
+                        # Check if already connected
+                        conn_result = subprocess.run(['jack_lsp', '-c', worker_port], 
+                                                     capture_output=True, text=True)
+                        
+                        if in_port_name not in conn_result.stdout:
+                            subprocess.run(['jack_connect', worker_port, in_port_name])
+                            logger.info(f"Connected {worker_port} to dedicated input {in_port_name}")
+                        else:
+                            logger.info(f"Worker {worker_port} already connected to {in_port_name}")
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to connect worker port {worker_port}: {e}")
             
-            # Then connect our output to system playback
+            # Connect our output to system playback
             if len(system_ports) >= 2:
                 # Connect our output ports to system playback ports for stereo
                 try:

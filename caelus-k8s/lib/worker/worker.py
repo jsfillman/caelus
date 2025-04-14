@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class CaelusWorker:
     """Caelus K8s worker that generates notes based on OSC messages."""
     
-    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=8, 
+    def __init__(self, osc_ip="0.0.0.0", osc_port=9000, sample_rate=44100, max_polyphony=16, 
                  local_audio=False, use_pyo=False, jack_client_name="caelus_worker",
                  jack_connect_to=None):
         """Initialize the worker.
@@ -391,9 +391,14 @@ class CaelusWorker:
             """
             
             # IMPORTANT: Send the actual polyphony setting for this worker
-            # We're explicitly setting note capacity to 1 here as requested
-            controller_client.client.send_message(WORKER_READY, [my_ip, self.osc_port, 1])
-            logger.info(f"Registered with controller at {controller_ip}:{controller_port} with capacity=1")
+            # Also send the JACK client name so controller can create dedicated input ports
+            controller_client.client.send_message(WORKER_READY, [
+                my_ip,                    # Worker IP
+                self.osc_port,            # Worker OSC port
+                self.max_polyphony,       # Worker note capacity
+                self.jack_client_name     # JACK client name for audio routing
+            ])
+            logger.info(f"Registered with controller at {controller_ip}:{controller_port} with capacity={self.max_polyphony}, JACK={self.jack_client_name}")
             
             # Store controller info
             self.controllers[controller_ip] = (controller_port, time.time())
@@ -511,6 +516,21 @@ class CaelusWorker:
                         if len(current_active_notes) > 0:
                             logger.info(f"Processing audio for {len(current_active_notes)} notes: {list(current_active_notes.keys())}")
                             
+                        # Count active notes for gain scaling
+                        active_note_count = len(current_active_notes)
+                        
+                        # Calculate per-note gain using square-root scaling for perceptual balance
+                        # This ensures that multiple notes don't cause clipping
+                        if active_note_count > 1:
+                            # Use square-root scaling for balanced polyphony
+                            note_gain = 0.7 / np.sqrt(active_note_count)
+                        else:
+                            note_gain = 0.7  # Single note can be louder
+                        
+                        # Log the gain calculation for debugging
+                        if random.random() < 0.01:  # 1% chance to log
+                            logger.info(f"Worker polyphony: {active_note_count} notes, gain={note_gain:.3f}")
+                            
                         # Mix in all active notes with phase continuity
                         for note, (freq, amp) in current_active_notes.items():
                             # Ensure phase is initialized for this note
@@ -531,8 +551,8 @@ class CaelusWorker:
                                 while phase[note] >= 2 * np.pi:
                                     phase[note] -= 2 * np.pi
                             
-                            # Mix with lower gain to prevent clipping
-                            mixed_buffer += note_buffer * 0.5  # Increased gain for better audibility
+                            # Apply the calculated gain and mix into the buffer
+                            mixed_buffer += note_buffer * note_gain
                             
                             # Periodically log the current amplitude to verify aftertouch is working
                             if random.random() < 0.005:  # Occasionally log (0.5% chance per callback)

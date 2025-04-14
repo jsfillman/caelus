@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on for OSC messages (for worker mode)")
     parser.add_argument("--controller-ip", default="127.0.0.1", help="IP address of the controller to register with (for worker mode)")
     parser.add_argument("--sr", type=int, default=44100, help="Audio sample rate (for worker mode)")
-    parser.add_argument("--polyphony", type=int, default=8, help="Maximum polyphony per worker (for worker mode)")
+    parser.add_argument("--polyphony", type=int, default=16, help="Maximum polyphony per worker (for worker mode)")
     parser.add_argument("--jack-client-name", dest="worker_jack_client_name", default="worker1", help="Name to use for Jack client (for worker mode)")
     
     args = parser.parse_args()
