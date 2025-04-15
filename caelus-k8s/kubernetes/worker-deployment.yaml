@@ -6,7 +6,7 @@ metadata:
     app: caelus
     component: worker
 spec:
-  replicas: 8  # Number of worker pods for polyphony
+  replicas: 8
   selector:
     matchLabels:
       app: caelus
@@ -19,17 +19,49 @@ spec:
     spec:
       containers:
       - name: worker
-        image: caelus-worker:latest  # Replace with your Docker image
+        image: caelus-worker:latest
         imagePullPolicy: IfNotPresent
-        command: ["./caelus", "worker"]
+        # No command/entrypoint override - using the script from Dockerfile
         args:
           - "--ip=0.0.0.0"
-          - "--port=9000"
+          - "--port=9000" 
           - "--sr=44100"
-          - "--polyphony=1"  # Each worker handles 1 note
+          - "--polyphony=1"
+          - "--controller-ip=$(CONTROLLER_IP)"
+          - "--jack-client-name=worker-$(POD_NAME)"
+        env:
+        - name: CONTROLLER_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP  # Use host IP to reach the Mac controller
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        securityContext:
+          privileged: true  # Required for audio devices
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "300m"
         ports:
         - containerPort: 9000
           name: osc
+          protocol: UDP
+        volumeMounts:
+        - name: presets-volume
+          mountPath: /app/presets
+        - name: audio-device
+          mountPath: /dev/snd
+      volumes:
+      - name: presets-volume
+        emptyDir: {}
+      - name: audio-device
+        hostPath:
+          path: /dev/snd
 ---
 apiVersion: v1
 kind: Service
@@ -42,8 +74,10 @@ spec:
   selector:
     app: caelus
     component: worker
-  clusterIP: None  # Headless service for direct pod access
+  type: NodePort  # Expose as NodePort for Mac controller access
   ports:
   - port: 9000
     targetPort: osc
+    nodePort: 30900
     name: osc
+    protocol: UDP
