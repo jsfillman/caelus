@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y \
     jackd2 \
     pulseaudio \
     pulseaudio-utils \
+    python3-pyo \
+    python3-rtmidi \
+    python3-mido \
+    python3-numpy \
+    python3-jack-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
