@@ -1,7 +1,8 @@
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout,
-    QHBoxLayout, QGroupBox, QTabWidget, QDial, QComboBox
+    QHBoxLayout, QGroupBox, QTabWidget, QDial, QComboBox,
+    QPushButton, QFileDialog
 )
 from PyQt6.QtCore import Qt, QCoreApplication
 from PyQt6.QtGui import QFont, QCloseEvent
@@ -38,14 +39,20 @@ class LabeledKnob(QWidget):
 
 
 class SynthControlUI(QWidget):
-    def __init__(self, vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback=None):
+    def __init__(self, vol_control, oscillators, waveform_bank, stability_control, server, voice_manager, cleanup_callback=None):
         super().__init__()
-        self.setWindowTitle("Synth Controls")
+        self.setWindowTitle("Octolux Synth Controls")
         self.setFixedSize(720, 480)
         
         # Store reference to the server and cleanup callback
         self.server = server
         self.cleanup_callback = cleanup_callback
+        self.voice_manager = voice_manager
+        
+        # Store references to control parameters
+        self.vol_control = vol_control
+        self.stability_control = stability_control
+        self.oscillators = oscillators
 
         tabs = QTabWidget()
 
@@ -54,9 +61,9 @@ class SynthControlUI(QWidget):
         global_layout = QVBoxLayout()
         
         # Volume control
-        global_knob = LabeledKnob("Volume", 0, 11, int(vol_control.value), vol_control, scale=1.0, knob_size=100)
+        global_knob = LabeledKnob("Volume", 0, 11, vol_control.value, vol_control, scale=1.0, knob_size=100)
         
-        # Stability control - NEW!
+        # Stability control
         stability_knob = LabeledKnob("Stability (cents)", 0, 20, stability_control.value, stability_control, scale=1.0, knob_size=100)
         
         # Add knobs to a horizontal layout
@@ -64,11 +71,24 @@ class SynthControlUI(QWidget):
         global_knobs_layout.addWidget(global_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
         global_knobs_layout.addWidget(stability_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
         
+        # Add patch management buttons
+        patch_layout = QHBoxLayout()
+        
+        save_button = QPushButton("Save Patch")
+        save_button.clicked.connect(self.save_patch)
+        
+        load_button = QPushButton("Load Patch")
+        load_button.clicked.connect(self.load_patch)
+        
+        patch_layout.addWidget(save_button)
+        patch_layout.addWidget(load_button)
+        
         global_layout.addStretch()
         global_layout.addLayout(global_knobs_layout)
+        global_layout.addLayout(patch_layout)
         global_layout.addStretch()
         global_tab.setLayout(global_layout)
-        tabs.addTab(global_tab, "G")
+        tabs.addTab(global_tab, "Global")
 
         # === OSCILLATOR TABS ===
         for i, osc in enumerate(oscillators):
@@ -111,11 +131,33 @@ class SynthControlUI(QWidget):
         
             layout.addLayout(row)
             tab.setLayout(layout)
-            tabs.addTab(tab, f"O{i+1}")
+            tabs.addTab(tab, f"Osc {i+1}")
         
         layout = QVBoxLayout()
         layout.addWidget(tabs)
         self.setLayout(layout)
+
+    def save_patch(self):
+        """Save current patch"""
+        from settings import save_patch
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Patch", "", "YAML Files (*.yaml)"
+        )
+        if filename:
+            if not filename.endswith('.yaml'):
+                filename += '.yaml'
+            save_patch(filename, self.voice_manager, self.vol_control, self.stability_control)
+    
+    def load_patch(self):
+        """Load patch"""
+        from settings import load_patch
+        
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load Patch", "", "YAML Files (*.yaml)"
+        )
+        if filename:
+            load_patch(filename, self.voice_manager, self.vol_control, self.stability_control)
 
     def closeEvent(self, event: QCloseEvent):
         """Handle the window close event gracefully"""
@@ -142,9 +184,9 @@ def get_ui_controls(self):
     return self.semi, self.cents, self  # so the UI can call osc.set_attack()
 
 
-def run_ui(vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback=None):
+def run_ui(vol_control, oscillators, waveform_bank, stability_control, server, voice_manager, cleanup_callback=None):
     app = QApplication(sys.argv)
-    window = SynthControlUI(vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback)
+    window = SynthControlUI(vol_control, oscillators, waveform_bank, stability_control, server, voice_manager, cleanup_callback)
     window.show()
     
     # Exit cleanly when the app finishes

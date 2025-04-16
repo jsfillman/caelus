@@ -24,4 +24,3 @@ def start_server(audio_index, nchnls=2):
     s.boot()
     s.start()
     return s
-
