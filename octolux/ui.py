@@ -3,8 +3,8 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout,
     QHBoxLayout, QGroupBox, QTabWidget, QDial, QComboBox
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QCoreApplication
+from PyQt6.QtGui import QFont, QCloseEvent
 
 class LabeledKnob(QWidget):
     def __init__(self, label, min_val, max_val, init_val, target, scale=1.0, knob_size=60):
@@ -38,19 +38,34 @@ class LabeledKnob(QWidget):
 
 
 class SynthControlUI(QWidget):
-    def __init__(self, vol_control, oscillators, waveform_bank):
+    def __init__(self, vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback=None):
         super().__init__()
         self.setWindowTitle("Synth Controls")
         self.setFixedSize(720, 480)
+        
+        # Store reference to the server and cleanup callback
+        self.server = server
+        self.cleanup_callback = cleanup_callback
 
         tabs = QTabWidget()
 
         # === GLOBAL TAB ===
         global_tab = QWidget()
         global_layout = QVBoxLayout()
+        
+        # Volume control
         global_knob = LabeledKnob("Volume", 0, 11, int(vol_control.value), vol_control, scale=1.0, knob_size=100)
+        
+        # Stability control - NEW!
+        stability_knob = LabeledKnob("Stability (cents)", 0, 20, stability_control.value, stability_control, scale=1.0, knob_size=100)
+        
+        # Add knobs to a horizontal layout
+        global_knobs_layout = QHBoxLayout()
+        global_knobs_layout.addWidget(global_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
+        global_knobs_layout.addWidget(stability_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
+        
         global_layout.addStretch()
-        global_layout.addWidget(global_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
+        global_layout.addLayout(global_knobs_layout)
         global_layout.addStretch()
         global_tab.setLayout(global_layout)
         tabs.addTab(global_tab, "G")
@@ -98,19 +113,39 @@ class SynthControlUI(QWidget):
             tab.setLayout(layout)
             tabs.addTab(tab, f"O{i+1}")
         
-
-        
-
         layout = QVBoxLayout()
         layout.addWidget(tabs)
         self.setLayout(layout)
+
+    def closeEvent(self, event: QCloseEvent):
+        """Handle the window close event gracefully"""
+        print("Window closing, cleaning up resources...")
+        
+        # Stop the audio server
+        if self.server:
+            print("Shutting down audio server...")
+            self.server.stop()
+            self.server.shutdown()
+            
+        # Call any additional cleanup function if provided
+        if self.cleanup_callback:
+            print("Running additional cleanup...")
+            self.cleanup_callback()
+            
+        # Accept the close event and properly quit the application
+        event.accept()
+        print("Exiting application...")
+        QCoreApplication.exit(0)
+
 
 def get_ui_controls(self):
     return self.semi, self.cents, self  # so the UI can call osc.set_attack()
 
 
-def run_ui(vol_control, oscillators, waveform_bank):
+def run_ui(vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback=None):
     app = QApplication(sys.argv)
-    window = SynthControlUI(vol_control, oscillators, waveform_bank)
+    window = SynthControlUI(vol_control, oscillators, waveform_bank, stability_control, server, cleanup_callback)
     window.show()
+    
+    # Exit cleanly when the app finishes
     sys.exit(app.exec())

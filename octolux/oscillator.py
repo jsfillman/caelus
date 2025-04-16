@@ -1,4 +1,5 @@
 import pyo
+import random
 
 class Oscillator:
     def __init__(self, base_freq_sig, amp_sig, vol_sig, out_chnl, waveform_bank, table_name):
@@ -7,7 +8,10 @@ class Oscillator:
         self.table = waveform_bank.get_table(table_name)
         self.semi = pyo.Sig(0)
         self.cents = pyo.Sig(0)
-
+        
+        # Random stability detuning value (added per note)
+        self.stability_detune_cents = 0
+        
         # === ADSR envelope ===
         self.attack_val = 0.01
         self.decay_val = 0.1
@@ -23,7 +27,8 @@ class Oscillator:
         )
 
         # === Detuning ===
-        self.detune = 2 ** ((self.semi / 12.0) + (self.cents / 1200.0))
+        # Include both manual detuning (semi/cents) and random stability detune
+        self.update_detune()
 
         # === Oscillator (not yet routed to output)
         self.osc = pyo.Osc(
@@ -47,13 +52,39 @@ class Oscillator:
             freq=self.modulated_cutoff,
             res=self.resonance
         ).out(chnl=out_chnl)
+    
+    def apply_stability_detune(self, max_cents):
+        """Apply random detuning based on stability setting"""
+        if max_cents <= 0:
+            self.stability_detune_cents = 0
+        else:
+            # Random value between -max_cents and +max_cents
+            self.stability_detune_cents = random.uniform(-max_cents, max_cents)
+        
+        # Update the overall detune factor
+        self.update_detune()
+        
+        return self.stability_detune_cents
+    
+    def update_detune(self):
+        """Update the detune factor based on semitones, cents and stability"""
+        # Convert cents to ratio (100 cents = 1 semitone)
+        total_cents = self.cents.get() + self.stability_detune_cents
+        total_semitones = self.semi.get() + (total_cents / 100.0)
+        
+        # Convert semitones to frequency ratio (2^(n/12) where n is semitones)
+        self.detune = 2 ** (total_semitones / 12.0)
+        
+        # If oscillator is already active, update its frequency
+        if hasattr(self, 'osc') and self.osc is not None:
+            # We need to update the frequency multiplier
+            self.osc.freq.mul = self.detune
 
     def get_ui_controls(self):
         return (
             self.semi, self.cents, self,
             self.cutoff, self.lfo_rate, self.lfo_depth, self.resonance
         )
-
 
     def set_waveform(self, table_name):
         self.table_name = table_name
