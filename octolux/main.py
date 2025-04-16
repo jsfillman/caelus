@@ -1,14 +1,15 @@
-# main.py
+# main.py with polyphony implementation
 import pyo
 import sys
 import signal
 import threading
+import time
+import math
 from ui import run_ui
 from setup import select_audio_device, select_midi_device, select_num_channels, start_server
 from midi_handler import start_midi_listener, stop_midi_listener
 from oscillator import Oscillator
 from wavetables import WaveformBank
-
 
 # Flag to track if the application is running
 running = True
@@ -23,61 +24,194 @@ s = start_server(audio_index, nchnls)
 # Set up waveform bank
 waveform_bank = WaveformBank().create_standard_tables()
 
-
-freq = pyo.Sig(0)
-amp = pyo.Sig(0)
-vol_control = pyo.Sig(11)
-vol = vol_control * (0.8 / 11)
+# Master volume control
+vol_control = pyo.Sig(0.8)  # Start with reasonable level
 
 # NEW: Add stability control (0-20 cents)
 stability_control = pyo.Sig(0)  # Default to 0 (no random detuning)
 
-oscillators = []
-for i in range(8):
-    osc = Oscillator(freq, amp, vol, out_chnl=i, waveform_bank=waveform_bank, table_name="triangle")
-    oscillators.append(osc)
+# NEW: Add polyphony control (1-16 voices)
+max_polyphony = 8  # Can be made adjustable in the UI
 
-def trigger_note(event_type, note, value):
-    if not running:
-        return
+# NEW: PolyphonicVoice class
+class PolyphonicVoice:
+    def __init__(self, vol_sig, waveform_bank, stability_cents=0):
+        self.note_number = None
+        self.velocity = None
+        self.timestamp = 0
         
-    if event_type == "note_on":
-        print(f"Note ON: {note}, velocity: {value}")
-        freq.value = pyo.midiToHz(note)
-        amp.value = value / 127.0 * 0.2
+        # Create independent control signals
+        self.freq_sig = pyo.Sig(440.0)
+        self.amp_sig = pyo.Sig(0.0)
         
-        # NEW: Apply random detuning based on stability control to each oscillator
-        stability_cents = stability_control.value
+        # Create 8 oscillators for this voice
+        self.oscillators = []
+        for i in range(8):
+            osc = Oscillator(
+                self.freq_sig, self.amp_sig, vol_sig, 
+                out_chnl=i % nchnls,  # Route to appropriate channel 
+                waveform_bank=waveform_bank, 
+                table_name="triangle"
+            )
+            self.oscillators.append(osc)
+    
+    def play_note(self, note, velocity, stability_cents=0):
+        """Play a note on this voice"""
+        # Update note info
+        self.note_number = note
+        self.velocity = velocity
+        self.timestamp = time.time()
+        
+        # Set frequency and amplitude
+        self.freq_sig.value = pyo.midiToHz(note)
+        self.amp_sig.value = velocity / 127.0 * 0.2
+        
+        # Apply stability detuning
+        detune_values = []
         if stability_cents > 0:
-            detune_values = []
-            for osc in oscillators:
-                # Apply random detuning and collect the values for logging
+            for osc in self.oscillators:
                 cents = osc.apply_stability_detune(stability_cents)
                 detune_values.append(cents)
             print(f"Applied stability detuning (±{stability_cents:.2f} cents): {[f'{c:.2f}' for c in detune_values]}")
         
-        # Trigger all oscillators
-        for osc in oscillators:
+        # Start all oscillators
+        for osc in self.oscillators:
             osc.env.play()
-            
-    elif event_type == "note_off":
-        print(f"Note OFF: {note}")
-        amp.value = 0
-        for osc in oscillators:
+    
+    def release_note(self):
+        """Release the current note"""
+        # Stop all oscillators
+        for osc in self.oscillators:
             osc.env.stop()
-            
-    elif event_type == "polytouch":
-        print(f"Poly AT: note {note}, value {value}")
-        amp.value = value / 127.0 * 0.3
         
-    elif event_type == "aftertouch":
-        print(f"Channel AT: value {value}")
-        amp.value = value / 127.0 * 0.3
+        # Clear note info (allows voice to be reused)
+        self.note_number = None
+        self.velocity = None
+    
+    def is_active(self):
+        """Check if voice is currently playing a note"""
+        return self.note_number is not None
+
+# NEW: Voice Manager class
+class VoiceManager:
+    def __init__(self, max_voices, vol_sig, waveform_bank, stability_control):
+        self.max_voices = max_voices
+        self.vol_sig = vol_sig
+        self.waveform_bank = waveform_bank
+        self.stability_control = stability_control
+        
+        # Initialize voice pool
+        self.voices = []
+        for i in range(max_voices):
+            voice = PolyphonicVoice(vol_sig, waveform_bank)
+            self.voices.append(voice)
+        
+        # Track active notes
+        self.active_notes = {}  # note_number -> voice
+        
+        print(f"Voice manager initialized with {max_voices} voices")
+    
+    def note_on(self, note, velocity):
+        """Start playing a note"""
+        # If note is already playing, stop it first
+        if note in self.active_notes:
+            self.note_off(note)
+        
+        # Find a free voice, or steal the oldest one
+        voice = self._find_voice()
+        
+        # Play the note
+        voice.play_note(note, velocity, self.stability_control.value)
+        
+        # Track the active note
+        self.active_notes[note] = voice
+        
+        # Adjust volume based on polyphony
+        self._adjust_volume()
+        
+        # Log the active voice count
+        active_count = sum(1 for v in self.voices if v.is_active())
+        print(f"Note ON: {note}, velocity: {velocity}, active voices: {active_count}/{self.max_voices}")
+    
+    def note_off(self, note):
+        """Stop playing a note"""
+        if note in self.active_notes:
+            # Release the voice
+            self.active_notes[note].release_note()
+            
+            # Remove from active notes
+            del self.active_notes[note]
+            
+            # Adjust volume based on remaining polyphony
+            self._adjust_volume()
+            
+            # Log the active voice count
+            active_count = sum(1 for v in self.voices if v.is_active())
+            print(f"Note OFF: {note}, active voices: {active_count}/{self.max_voices}")
+    
+    def _find_voice(self):
+        """Find an available voice or steal the oldest one"""
+        # First, try to find an unused voice
+        for voice in self.voices:
+            if not voice.is_active():
+                return voice
+        
+        # If all voices are active, steal the oldest one
+        oldest_voice = min((v for v in self.voices if v.is_active()), 
+                          key=lambda v: v.timestamp)
+        
+        print(f"All {self.max_voices} voices in use. Stealing voice from note {oldest_voice.note_number}")
+        
+        # Remove from active notes
+        for note, voice in list(self.active_notes.items()):
+            if voice == oldest_voice:
+                del self.active_notes[note]
+                break
+        
+        # Release the voice
+        oldest_voice.release_note()
+        
+        return oldest_voice
+    
+    def _adjust_volume(self):
+        """Adjust master volume based on number of active voices"""
+        active_count = len(self.active_notes)
+        
+        if active_count <= 1:
+            # Full volume for single note
+            self.vol_sig.value = 0.8
+        else:
+            # Scale down using square root for better perceptual balance
+            self.vol_sig.value = 0.8 / math.sqrt(active_count)
+            
+        print(f"Volume adjusted to {self.vol_sig.value:.2f} for {active_count} active voices")
+    
+    def all_notes_off(self):
+        """Stop all active notes"""
+        for note in list(self.active_notes.keys()):
+            self.note_off(note)
+
+# Create voice manager
+voice_manager = VoiceManager(max_polyphony, vol_control, waveform_bank, stability_control)
 
 # === MIDI CALLBACK ===
 def on_midi(event_type, note, value):
-    if running:
-        trigger_note(event_type, note, value)
+    if not running:
+        return
+        
+    if event_type == "note_on":
+        voice_manager.note_on(note, value)
+            
+    elif event_type == "note_off":
+        voice_manager.note_off(note)
+            
+    elif event_type == "polytouch":
+        # Could implement per-voice aftertouch
+        pass
+        
+    elif event_type == "aftertouch":
+        # Could implement channel aftertouch affecting all voices
+        pass
 
 # === MIDI LISTENER ===
 midi_thread = start_midi_listener(midi_port, on_midi)
@@ -92,11 +226,9 @@ def cleanup():
     stop_midi_listener()
     
     # Stop all active notes
-    for osc in oscillators:
-        osc.env.stop()
+    voice_manager.all_notes_off()
     
     # Wait a moment for any processing to finish
-    import time
     time.sleep(0.1)
     
     print("Cleanup complete!")
@@ -111,9 +243,12 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # Termination request
 
+# Add polyphony control to UI parameters
+# You would need to extend your UI to include polyphony settings
+
 # === RUN UI ===
 # Update the UI call to include the server and cleanup callback
-run_ui(vol_control, oscillators, waveform_bank, stability_control, s, cleanup)
+run_ui(vol_control, voice_manager.voices[0].oscillators, waveform_bank, stability_control, s, cleanup)
 
 # We shouldn't get here if using the PyQt6 event loop, but just in case:
 print("\nMain thread exiting...\n")
