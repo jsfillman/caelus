@@ -285,14 +285,15 @@ class WaveformSelector(QWidget):
         
         # Update current index and emit signal
         self.current_index = wave_index
+        self.wave_viz.setWaveType(wave_index)
         self.waveformChanged.emit(wave_index)
         
         # Update visualization
         self._animate_wave_change()
-        self.update()
     
     def _animate_wave_change(self):
         """Animate waveform change"""
+        # Add a flash effect to the wave visualization frame
         self.wave_viz.setStyleSheet("""
             background-color: #252525;
             border: 1px solid #D4BF8A;
@@ -326,9 +327,11 @@ class WaveformSelector(QWidget):
             for i, button in enumerate(self.wave_buttons):
                 button.setChecked(i == index)
             
+            # Update the wave visualization
+            self.wave_viz.setWaveType(index)
+            
             # Animation and update
             self._animate_wave_change()
-            self.update()
             self.waveformChanged.emit(index)
     
     # Create a subclass of QFrame to handle wave visualization
@@ -1107,8 +1110,8 @@ class MurnauUI(QMainWindow):
         
         # Create a timer to animate waveform visualization
         self.wave_animation_timer = QTimer()
-        self.wave_animation_timer.timeout.connect(self.waveform_selector.update)
-        self.wave_animation_timer.start(100)  # Update every 100ms
+        self.wave_animation_timer.timeout.connect(self.waveform_selector.animate_wave)
+        self.wave_animation_timer.start(50)  # Update every 50ms for smooth animation
         
     def init_parameters(self):
         """Initialize synth parameters via OSC"""
