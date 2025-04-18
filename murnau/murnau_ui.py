@@ -35,8 +35,8 @@ def send_osc(ip, port, address, value):
     sock.sendto(message, (ip, port))
     sock.close()
 
-# Custom styled slider with value label
-class StyledSlider(QWidget):
+# Custom styled knob with value label
+class LabeledKnob(QWidget):
     valueChanged = pyqtSignal(float)
     
     def __init__(self, name, min_val, max_val, default, is_log=False, parent=None, midi_cc=None):
@@ -50,6 +50,7 @@ class StyledSlider(QWidget):
         # Main layout
         layout = QVBoxLayout(self)
         layout.setSpacing(2)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         
         # Create label with name
         self.name_label = QLabel(name)
@@ -61,40 +62,37 @@ class StyledSlider(QWidget):
         if midi_cc is not None:
             self.name_label.setText(f"{name} (CC{midi_cc})")
         
-        # Create slider
-        self.slider = QSlider(Qt.Orientation.Vertical)
-        self.slider.setRange(0, 1000)
-        self.slider.setMinimumHeight(150)
-        self.slider.setMaximumWidth(40)
-        # Set default position based on input value
-        default_pos = self.value_to_slider(default)
-        self.slider.setValue(default_pos)
-        self.slider.setStyleSheet("""
-            QSlider::groove:vertical {
-                background: #2A2A2A;
-                width: 12px;
-                border-radius: 6px;
+        # Create knob
+        self.knob = QDial()
+        self.knob.setMinimum(0)
+        self.knob.setMaximum(1000)
+        self.knob.setNotchesVisible(True)
+        self.knob.setWrapping(False)
+        self.knob.setFixedSize(80, 80)
+        self.knob.setStyleSheet("""
+            QDial {
+                background-color: #2A2A2A;
                 border: 1px solid #3A3A3A;
+                border-radius: 40px;
             }
-            QSlider::handle:vertical {
+            QDial::groove {
+                background: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #8A7A55, stop:1 #5D5236);
+                border-radius: 40px;
+            }
+            QDial::handle {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                           stop:0 #E5D5A0, stop:1 #C0AA70);
                 border: 1px solid #555555;
-                height: 22px;
-                width: 22px;
-                margin: 0 -6px;
-                border-radius: 11px;
-            }
-            QSlider::add-page:vertical {
-                background: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                          stop:0 #8A7A55, stop:1 #5D5236);
-                border-radius: 6px;
-            }
-            QSlider::sub-page:vertical {
-                background: #2A2A2A;
-                border-radius: 6px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
             }
         """)
+        
+        # Set default position based on input value
+        default_pos = self.value_to_knob(default)
+        self.knob.setValue(default_pos)
         
         # Create value label with decorative frame
         value_frame = QFrame()
@@ -116,11 +114,11 @@ class StyledSlider(QWidget):
         value_layout.addWidget(self.value_label)
         
         # Connect signal
-        self.slider.valueChanged.connect(self.handle_slider_change)
+        self.knob.valueChanged.connect(self.handle_knob_change)
         
         # Add widgets to layout
         layout.addWidget(self.name_label)
-        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.knob)
         layout.addWidget(value_frame)
         
         # Set layout properties
@@ -141,9 +139,8 @@ class StyledSlider(QWidget):
         """Reset label style after animation"""
         self.value_label.setStyleSheet("color: #D4BF8A;")
         
-        
-    def value_to_slider(self, value):
-        """Convert actual value to slider position"""
+    def value_to_knob(self, value):
+        """Convert actual value to knob position"""
         if self.is_log:
             # Logarithmic scaling for values like frequency
             normalized = (value - self.min_val) / (self.max_val - self.min_val)
@@ -153,8 +150,8 @@ class StyledSlider(QWidget):
             normalized = (value - self.min_val) / (self.max_val - self.min_val)
             return int(normalized * 1000)
     
-    def slider_to_value(self, position):
-        """Convert slider position to actual value"""
+    def knob_to_value(self, position):
+        """Convert knob position to actual value"""
         if self.is_log:
             # Logarithmic scaling
             normalized = position / 1000
@@ -164,22 +161,22 @@ class StyledSlider(QWidget):
             normalized = position / 1000
             return self.min_val + normalized * (self.max_val - self.min_val)
     
-    def handle_slider_change(self, position):
-        """Handle slider value change"""
-        value = self.slider_to_value(position)
+    def handle_knob_change(self, position):
+        """Handle knob value change"""
+        value = self.knob_to_value(position)
         self.value_label.setText(f"{value:.2f}")
         self._animate_value_change()
         self.valueChanged.emit(value)
     
     def set_value(self, value):
-        """Set slider from outside"""
-        position = self.value_to_slider(value)
-        self.slider.setValue(position)
+        """Set knob from outside"""
+        position = self.value_to_knob(value)
+        self.knob.setValue(position)
     
     def set_from_midi_cc(self, cc_value):
         """Set from MIDI CC value (0-127)"""
         if self.midi_cc is not None:
-            # Convert from 0-127 range to slider range
+            # Convert from 0-127 range to knob range
             normalized = cc_value / 127.0
             value = self.min_val + normalized * (self.max_val - self.min_val)
             self.set_value(value)
@@ -836,271 +833,171 @@ class MurnauUI(QMainWindow):
         self.LEGATO_THRESHOLD = 0.03  # 30ms threshold for legato transitions
         self.last_gate_off_time = 0
         
-        # Show splash screen
-        splash_pixmap = QPixmap(300, 200)
-        splash_pixmap.fill(QColor("#1A1A1A"))
-        
-        # Create painter for splash screen
-        splash_painter = QPainter(splash_pixmap)
-        splash_painter.setFont(QFont("Futura", 24, QFont.Weight.Bold))
-        splash_painter.setPen(QColor("#D4BF8A"))
-        splash_painter.drawText(splash_pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "MURNAU")
-        splash_painter.setFont(QFont("Futura", 12))
-        splash_painter.setPen(QColor("#8A7A55"))
-        splash_painter.drawText(splash_pixmap.rect().adjusted(0, 40, 0, 0), 
-                                Qt.AlignmentFlag.AlignCenter, "Cinematic Synthesizer")
-        splash_painter.end()
-        
-        self.splash = QSplashScreen(splash_pixmap)
-        self.splash.show()
-        
         # Initialize UI
         self.init_ui()
         
-        # Start MIDI processing
+        # Initialize MIDI
         self.init_midi()
+        
+        # Initialize parameters
+        self.init_parameters()
+        
+        # Show the window
+        self.show()
+        
+        # Set focus to piano keys
+        self.piano.setFocus()
+        
+        # Start animation effects
+        self._animate_ui_elements()
     
     def init_ui(self):
-        """Initialize the user interface"""
+        """Initialize the main UI"""
         # Set window properties
-        self.setWindowTitle("Murnau - Cinematic Synthesizer")
-        self.setMinimumSize(900, 700)
+        self.setWindowTitle("Murnau")
+        self.setStyleSheet("background-color: #121212; color: #e0d9c6;")
         
-        # Set dark theme
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #131313;
+        # Main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setSpacing(10)
+        
+        # Top section with MIDI and controls
+        top_section = QHBoxLayout()
+        
+        # Left column - MIDI controls
+        left_column = QVBoxLayout()
+        
+        # MIDI control section
+        midi_group = QGroupBox("MIDI Control")
+        midi_layout = QHBoxLayout()
+        
+        # MIDI port selector
+        self.midi_port_combo = QComboBox()
+        self.midi_port_combo.setFont(QFont("Futura", 10))
+        self.midi_port_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2A2A2A;
+                color: #E6E6E6;
+                border: 1px solid #3A3A3A;
+                border-radius: 3px;
+                padding: 5px;
             }
-            QWidget {
-                background-color: #131313;
+            QComboBox::drop-down {
+                border: none;
             }
-            QGroupBox {
-                border: 2px solid #3A3A3A;
-                border-radius: 5px;
-                margin-top: 15px;
-                font-family: Futura;
-                font-weight: bold;
-                color: #D4BF8A;
-                background-color: #1A1A1A;
+            QComboBox::down-arrow {
+                image: url(down_arrow.png);
+                width: 12px;
+                height: 12px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 8px 0 8px;
-                background-color: #131313;
-            }
+        """)
+        
+        # MIDI enable/disable button
+        self.midi_toggle = QPushButton("Enable MIDI")
+        self.midi_toggle.setCheckable(True)
+        self.midi_toggle.setFont(QFont("Futura", 10))
+        self.midi_toggle.setStyleSheet("""
             QPushButton {
                 background-color: #2A2A2A;
-                color: #D4BF8A;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 5px 10px;
-                font-family: Futura;
+                color: #E6E6E6;
+                border: 1px solid #3A3A3A;
+                border-radius: 3px;
+                padding: 5px 15px;
+            }
+            QPushButton:checked {
+                background-color: #5D5236;
+                color: #FFFFFF;
+                border: 1px solid #D4BF8A;
             }
             QPushButton:hover {
                 background-color: #3A3A3A;
             }
-            QPushButton:pressed {
-                background-color: #444444;
-            }
-            QLabel {
-                color: #E6E6E6;
-                font-family: Futura;
-            }
-            QComboBox {
-                background-color: #2A2A2A;
-                color: #E6E6E6;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 3px;
-                font-family: Futura;
-            }
-            QCheckBox {
-                color: #E6E6E6;
-                font-family: Futura;
-            }
-            QCheckBox::indicator {
-                width: 13px;
-                height: 13px;
-                border: 1px solid #555555;
-                border-radius: 2px;
-                background-color: #2A2A2A;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #D4BF8A;
-            }
         """)
+        self.midi_toggle.clicked.connect(self.toggle_midi)
         
-        # Create central widget
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(10)
+        midi_layout.addWidget(QLabel("MIDI Port:"))
+        midi_layout.addWidget(self.midi_port_combo)
+        midi_layout.addWidget(self.midi_toggle)
         
-        # Create header with expressionist styling
-        header_frame = QFrame()
-        header_frame.setStyleSheet("background-color: #0A0A0A; border-bottom: 2px solid #3A3A3A;")
-        header_frame.setMinimumHeight(100)
-        header_layout = QVBoxLayout(header_frame)
-        
-        # Create title label
-        title_label = QLabel("MURNAU")
-        title_label.setFont(QFont("Futura", 32, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("color: #D4BF8A; margin: 10px; background: transparent;")
-        
-        # Create subtitle
-        subtitle = QLabel("Cinematic Synthesizer")
-        subtitle.setFont(QFont("Futura", 16))
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("color: #8A7A55; margin-bottom: 10px; background: transparent;")
-        
-        header_layout.addWidget(title_label)
-        header_layout.addWidget(subtitle)
-        
-        # Main controls container
-        controls_frame = QFrame()
-        controls_frame.setStyleSheet("background-color: #131313;")
-        controls_layout = QHBoxLayout(controls_frame)
-        controls_layout.setSpacing(15)
-        
-        # MIDI section
-        midi_group = QGroupBox("MIDI Input")
-        midi_layout = QVBoxLayout()
-        
-        # MIDI port selector
-        midi_port_layout = QHBoxLayout()
-        midi_port_label = QLabel("MIDI Port:")
-        midi_port_label.setStyleSheet("background: transparent;")
-        
-        self.midi_port_combo = QComboBox()
-        self.midi_port_combo.setMinimumWidth(200)
-        self.update_midi_ports()
-        
-        midi_refresh_btn = QPushButton("Refresh")
-        midi_refresh_btn.setMaximumWidth(80)
-        midi_refresh_btn.clicked.connect(self.update_midi_ports)
-        
-        midi_port_layout.addWidget(midi_port_label)
-        midi_port_layout.addWidget(self.midi_port_combo, 1)
-        midi_port_layout.addWidget(midi_refresh_btn)
-        
-        # MIDI connect button
-        self.midi_connect_btn = QPushButton("Connect MIDI")
-        self.midi_connect_btn.clicked.connect(self.toggle_midi)
-        
-        # MIDI status
-        self.midi_status = QLabel("MIDI: Not connected")
-        self.midi_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.midi_status.setStyleSheet("color: #8A7A55; background: transparent;")
-        
-        # Add to MIDI layout
-        midi_layout.addLayout(midi_port_layout)
-        midi_layout.addWidget(self.midi_connect_btn)
-        midi_layout.addWidget(self.midi_status)
         midi_group.setLayout(midi_layout)
+        left_column.addWidget(midi_group)
         
-        # Oscillator section
-        osc_group = QGroupBox("Oscillator")
-        osc_layout = QVBoxLayout()
-        
-        # Waveform selector
+        # Waveform selector below MIDI
         self.waveform_selector = WaveformSelector(midi_cc=1)
         self.waveform_selector.waveformChanged.connect(self.on_waveform_change)
-        osc_layout.addWidget(self.waveform_selector)
+        left_column.addWidget(self.waveform_selector)
         
-        osc_group.setLayout(osc_layout)
+        top_section.addLayout(left_column)
         
-        # ADSR Envelope section
-        env_group = QGroupBox("Envelope")
-        env_layout = QHBoxLayout()
+        # Right side - Controls
+        right_section = QHBoxLayout()
         
-        # Create ADSR sliders with MIDI CC mappings
-        self.attack_slider = StyledSlider("Attack", 0.001, 1.0, 0.005, midi_cc=73)
+        # ADSR knobs
+        adsr_group = QGroupBox("Envelope")
+        adsr_layout = QHBoxLayout()
+        
+        self.attack_slider = LabeledKnob("Attack", 0.001, 5.0, 0.005, midi_cc=73)  # Up to 5 seconds
         self.attack_slider.valueChanged.connect(self.on_attack_change)
+        adsr_layout.addWidget(self.attack_slider)
         
-        self.decay_slider = StyledSlider("Decay", 0.001, 1.0, 0.1, midi_cc=75)
+        self.decay_slider = LabeledKnob("Decay", 0.001, 3.0, 0.1, midi_cc=75)  # Up to 3 seconds
         self.decay_slider.valueChanged.connect(self.on_decay_change)
+        adsr_layout.addWidget(self.decay_slider)
         
-        self.sustain_slider = StyledSlider("Sustain", 0.0, 1.0, 0.9, midi_cc=31)
+        self.sustain_slider = LabeledKnob("Sustain", 0.0, 1.0, 0.9, midi_cc=31)  # 0-1 range (unchanged)
         self.sustain_slider.valueChanged.connect(self.on_sustain_change)
+        adsr_layout.addWidget(self.sustain_slider)
         
-        self.release_slider = StyledSlider("Release", 0.1, 2.0, 0.5, midi_cc=72)
+        self.release_slider = LabeledKnob("Release", 0.1, 5.0, 0.5, midi_cc=72)  # Up to 5 seconds
         self.release_slider.valueChanged.connect(self.on_release_change)
+        adsr_layout.addWidget(self.release_slider)
         
-        env_layout.addWidget(self.attack_slider)
-        env_layout.addWidget(self.decay_slider)
-        env_layout.addWidget(self.sustain_slider)
-        env_layout.addWidget(self.release_slider)
+        adsr_group.setLayout(adsr_layout)
+        right_section.addWidget(adsr_group)
         
-        env_group.setLayout(env_layout)
+        # Gain knob
+        gain_group = QGroupBox("Output")
+        gain_layout = QHBoxLayout()
         
-        # Output section
-        output_group = QGroupBox("Output")
-        output_layout = QVBoxLayout()
-        
-        # Create gain slider
-        self.gain_slider = StyledSlider("Gain", 0.0, 1.0, 1.0, midi_cc=7)
+        self.gain_slider = LabeledKnob("Gain", 0.0, 1.0, 1.0, midi_cc=7)
         self.gain_slider.valueChanged.connect(self.on_gain_change)
+        gain_layout.addWidget(self.gain_slider)
         
-        output_layout.addWidget(self.gain_slider)
-        output_group.setLayout(output_layout)
+        gain_group.setLayout(gain_layout)
+        right_section.addWidget(gain_group)
         
-        # Add control sections to main control layout
-        left_controls = QVBoxLayout()
-        left_controls.addWidget(midi_group)
-        left_controls.addWidget(output_group)
+        top_section.addLayout(right_section)
         
-        center_controls = QVBoxLayout()
-        center_controls.addWidget(osc_group, 1)
+        # Add top section to main layout
+        main_layout.addLayout(top_section)
         
-        right_controls = QVBoxLayout()
-        right_controls.addWidget(env_group, 1)
+        # Add spacer to push keyboard to bottom
+        main_layout.addStretch()
         
-        controls_layout.addLayout(left_controls)
-        controls_layout.addLayout(center_controls, 1)
-        controls_layout.addLayout(right_controls, 1)
-        
-        # Create keyboard with expressionist styling
+        # Piano keyboard at the bottom
         keyboard_group = QGroupBox("Keyboard")
         keyboard_layout = QVBoxLayout()
         
-        # Updated keyboard help message
-        keyboard_help = QLabel("Play with mouse, computer keyboard (Z-M), or MIDI controller")
-        keyboard_help.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        keyboard_help.setStyleSheet("color: #8A7A55; background: transparent;")
-        
-        self.piano_keys = PianoKeys()
-        self.piano_keys.noteOn.connect(self.on_note_on)
-        self.piano_keys.noteOff.connect(self.on_note_off)
-        
-        keyboard_layout.addWidget(keyboard_help)
-        keyboard_layout.addWidget(self.piano_keys)
+        self.piano = PianoKeys()
+        self.piano.noteOn.connect(self.on_note_on)
+        self.piano.noteOff.connect(self.on_note_off)
+        keyboard_layout.addWidget(self.piano)
         
         keyboard_group.setLayout(keyboard_layout)
-        
-        # Add all sections to main layout
-        main_layout.addWidget(header_frame)
-        main_layout.addWidget(controls_frame, 1)
         main_layout.addWidget(keyboard_group)
         
-        # Status bar for OSC and MIDI info
-        self.statusBar().showMessage(f"Connected to: {self.synth_name} on {self.osc_ip}:{self.osc_port}")
-        self.statusBar().setStyleSheet("color: #8A7A55;")
+        # Set window size
+        self.resize(800, 600)
         
-        # Set central widget
-        self.setCentralWidget(central_widget)
+        # Initialize MIDI
+        self.init_midi()
         
-        # Initialize OSC parameters
-        self.init_parameters()
+        # Update MIDI ports
+        self.update_midi_ports()
         
-        # Close splash screen and show window
-        self.splash.finish(self)
-        self.show()
-        
-        # Set focus to piano keys
-        self.piano_keys.setFocus()
-        
-        # Start animation effects
+        # Animate UI elements
         self._animate_ui_elements()
     
     def _animate_ui_elements(self):
@@ -1165,8 +1062,8 @@ class MurnauUI(QMainWindow):
         # Get selected port
         port_name = self.midi_port_combo.currentText()
         if not port_name or port_name.startswith("No MIDI") or port_name.startswith("Error"):
-            self.midi_status.setText("Error: No valid MIDI port selected")
-            self.midi_status.setStyleSheet("color: #FF5555; background: transparent;")
+            self.midi_toggle.setText("Error: No valid MIDI port selected")
+            self.midi_toggle.setStyleSheet("color: #FF5555; background: transparent;")
             return
         
         try:
@@ -1179,14 +1076,13 @@ class MurnauUI(QMainWindow):
             self.midi_thread.start()
             
             # Update UI
-            self.midi_connect_btn.setText("Disconnect MIDI")
-            self.midi_status.setText(f"MIDI: Connected to {port_name}")
-            self.midi_status.setStyleSheet("color: #8AFF7A; background: transparent;")
+            self.midi_toggle.setText("Disconnect MIDI")
+            self.midi_toggle.setStyleSheet("color: #8AFF7A; background: transparent;")
             self.statusBar().showMessage(f"MIDI: Connected to {port_name} | OSC: {self.synth_name} on {self.osc_ip}:{self.osc_port}")
         
         except Exception as e:
-            self.midi_status.setText(f"Error: {str(e)}")
-            self.midi_status.setStyleSheet("color: #FF5555; background: transparent;")
+            self.midi_toggle.setText(f"Error: {str(e)}")
+            self.midi_toggle.setStyleSheet("color: #FF5555; background: transparent;")
     
     def stop_midi(self):
         """Stop MIDI processing"""
@@ -1200,9 +1096,8 @@ class MurnauUI(QMainWindow):
             self.midi_input = None
         
         # Update UI
-        self.midi_connect_btn.setText("Connect MIDI")
-        self.midi_status.setText("MIDI: Not connected")
-        self.midi_status.setStyleSheet("color: #8A7A55; background: transparent;")
+        self.midi_toggle.setText("Connect MIDI")
+        self.midi_toggle.setStyleSheet("color: #8A7A55; background: transparent;")
         self.statusBar().showMessage(f"OSC: {self.synth_name} on {self.osc_ip}:{self.osc_port}")
     
     def process_midi(self):
@@ -1246,7 +1141,7 @@ class MurnauUI(QMainWindow):
                 self.current_note = message.note
                 
                 # Update piano UI
-                if self.piano_keys.handle_midi_note_on(message.note, message.velocity):
+                if self.piano.handle_midi_note_on(message.note, message.velocity):
                     # UI was updated successfully
                     pass
             
@@ -1274,7 +1169,7 @@ class MurnauUI(QMainWindow):
                         self.current_note = None
                 
                 # Update piano UI
-                self.piano_keys.handle_midi_note_off(message.note)
+                self.piano.handle_midi_note_off(message.note)
             
             # Control changes for parameters
             elif message.type == 'control_change':

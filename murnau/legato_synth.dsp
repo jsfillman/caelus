@@ -13,10 +13,10 @@ gain = hslider("gain[osc:/gain]", 1.0, 0, 1, 0.01);
 wave_type = nentry("wave_type[osc:/wave_type]", 2, 0, 3, 1) : int;
 
 // ADSR envelope with longer sustain and release
-attack = hslider("attack[osc:/attack]", 0.005, 0.001, 1, 0.001);
-decay = hslider("decay[osc:/decay]", 0.1, 0.001, 1, 0.001);
+attack = hslider("attack[osc:/attack]", 0.005, 0.001, 5, 0.001);
+decay = hslider("decay[osc:/decay]", 0.1, 0.001, 3, 0.001);
 sustain = hslider("sustain[osc:/sustain]", 0.9, 0, 1, 0.01);
-release = hslider("release[osc:/release]", 0.5, 0.1, 2, 0.01);
+release = hslider("release[osc:/release]", 0.5, 0.1, 5, 0.01);
 
 // Generate all waveforms
 sine_wave = os.osc(freq);
@@ -35,4 +35,5 @@ oscillator =
 env = en.adsr(attack, decay, sustain, release, gate);
 
 // Final output
-process = oscillator * env * gain;
+// process = oscillator * env * gain;
+process = oscillator * env * gain <: _, _;
