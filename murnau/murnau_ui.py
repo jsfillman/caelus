@@ -934,6 +934,21 @@ class MurnauUI(QMainWindow):
         # Right side - Controls
         right_section = QHBoxLayout()
         
+        # Filter section
+        filter_group = QGroupBox("Filter")
+        filter_layout = QHBoxLayout()
+        
+        self.cutoff_knob = LabeledKnob("Cutoff", 20, 20000, 2000, is_log=True, midi_cc=74)  # CC74 is filter cutoff
+        self.cutoff_knob.valueChanged.connect(self.on_cutoff_change)
+        filter_layout.addWidget(self.cutoff_knob)
+        
+        self.resonance_knob = LabeledKnob("Resonance", 0.1, 4, 0.5, midi_cc=71)  # Minimum of 0.1 to prevent silence
+        self.resonance_knob.valueChanged.connect(self.on_resonance_change)
+        filter_layout.addWidget(self.resonance_knob)
+        
+        filter_group.setLayout(filter_layout)
+        right_section.addWidget(filter_group)
+        
         # ADSR knobs
         adsr_group = QGroupBox("Envelope")
         adsr_layout = QHBoxLayout()
@@ -1019,6 +1034,8 @@ class MurnauUI(QMainWindow):
         self.on_decay_change(0.1)
         self.on_sustain_change(0.9)
         self.on_release_change(0.5)
+        self.on_cutoff_change(2000)  # Initial cutoff
+        self.on_resonance_change(0.5)  # Initial resonance
     
     def update_midi_ports(self):
         """Update MIDI port selection dropdown"""
@@ -1231,6 +1248,14 @@ class MurnauUI(QMainWindow):
         """Handle note off from UI"""
         send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 0.0)
         
+    def on_cutoff_change(self, value):
+        """Handle filter cutoff change"""
+        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/cutoff", value)
+    
+    def on_resonance_change(self, value):
+        """Handle filter resonance change"""
+        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/resonance", value)
+    
     def closeEvent(self, event):
         """Handle window close event"""
         # Stop MIDI processing

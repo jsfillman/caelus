@@ -9,6 +9,10 @@ freq = hslider("freq[osc:/freq]", 440, 20, 8000, 0.01);
 gate = button("gate[osc:/gate]");
 gain = hslider("gain[osc:/gain]", 1.0, 0, 1, 0.01);
 
+// Filter parameters
+cutoff = hslider("cutoff[osc:/cutoff]", 2000, 20, 20000, 1);
+resonance = hslider("resonance[osc:/resonance]", 0.5, 0.1, 4, 0.01);  // Minimum of 0.1 to prevent silence
+
 // Waveform selector (0:sine, 1:triangle, 2:saw, 3:square)
 wave_type = nentry("wave_type[osc:/wave_type]", 2, 0, 3, 1) : int;
 
@@ -34,6 +38,9 @@ oscillator =
 // Full ADSR envelope for better control
 env = en.adsr(attack, decay, sustain, release, gate);
 
-// Final output
-// process = oscillator * env * gain;
-process = oscillator * env * gain <: _, _;
+// Resonant lowpass filter with self-oscillation
+// Using two cascaded resonant filters for 24dB/oct slope
+filtered = oscillator : fi.resonlp(cutoff, resonance, 1.0) : fi.resonlp(cutoff, resonance, 1.0);
+
+// Final output with envelope and gain
+process = filtered * env * gain <: _, _;
