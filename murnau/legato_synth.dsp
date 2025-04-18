@@ -13,11 +13,23 @@ coarse_tune   = hslider("coarse_tune[osc:/coarse_tune]", 0, -24, 24, 1) : int;
 fine_tune     = hslider("fine_tune[osc:/fine_tune]", 0, -100, 100, 1);
 stability     = hslider("stability[osc:/stability]", 0, 0, 20, 0.1);
 
+// === Frequency Ramping ===
+start_freq_offset = hslider("start_freq_offset[osc:/start_freq_offset]", 0, -200, 200, 1);
+end_freq_offset = hslider("end_freq_offset[osc:/end_freq_offset]", 0, -200, 200, 1);
+ramp_time = hslider("ramp_time[osc:/ramp_time]", 0, 0, 10, 0.01);
+
+// Create ramp when gate triggers
+ramp = gate : ba.impulsify : en.ar(ramp_time, 0.001);
+freq_offset_ramp = start_freq_offset + (end_freq_offset - start_freq_offset) * ramp;
+
 // === Pitch Instability ===
 random_stability  = gate : ba.sAndH(no.noise * 2 - 1) * stability;
 cents_offset      = fine_tune + random_stability;
 semitones_offset  = coarse_tune + (cents_offset * 0.01);
-freq              = base_freq * pow(2, semitones_offset / 12);
+
+// Final frequency calculation - apply freq_offset_ramp if ramp_time > 0
+freq = base_freq + ((ramp_time > 0) * freq_offset_ramp);
+freq_with_tuning = freq * pow(2, semitones_offset / 12);
 
 // === Envelope Controls (Dual) ===
 attack_L   = hslider("attack_L[osc:/attack_L]", 0.005, 0.001, 5, 0.001);
@@ -38,10 +50,10 @@ env_R = en.adsr(attack_R, decay_R, sustain_R, release_R, gate);
 wave_type = nentry("wave_type[osc:/wave_type]", 2, 0, 3, 1) : int;
 
 osc_mono = 
-    (wave_type == 0) * os.osc(freq) +
-    (wave_type == 1) * os.triangle(freq) +
-    (wave_type == 2) * os.sawtooth(freq) +
-    (wave_type == 3) * os.square(freq);
+    (wave_type == 0) * os.osc(freq_with_tuning) +
+    (wave_type == 1) * os.triangle(freq_with_tuning) +
+    (wave_type == 2) * os.sawtooth(freq_with_tuning) +
+    (wave_type == 3) * os.square(freq_with_tuning);
 
 // === Duplicate oscillator for stereo path ===
 osc_L = osc_mono * env_L;

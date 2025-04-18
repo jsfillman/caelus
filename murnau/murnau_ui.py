@@ -958,9 +958,9 @@ class MurnauUI(QMainWindow):
         ramp_group = QGroupBox("Frequency Ramp")
         ramp_layout = QVBoxLayout()
         
-        # Start Frequency
+        # Start Frequency Offset
         start_freq_layout = QHBoxLayout()
-        start_freq_label = QLabel("Start Freq (Hz)")
+        start_freq_label = QLabel("Start Offset (Hz)")
         start_freq_label.setStyleSheet("color: #E0E0E0;")
         self.start_freq = QLineEdit()
         self.start_freq.setStyleSheet("""
@@ -972,16 +972,16 @@ class MurnauUI(QMainWindow):
                 padding: 4px;
             }
         """)
-        self.start_freq.setValidator(QDoubleValidator(-500, 500, 1))
+        self.start_freq.setValidator(QDoubleValidator(-200, 200, 1))
         self.start_freq.setText("0")
-        self.start_freq.editingFinished.connect(lambda: self.send_osc("/start_freq", float(self.start_freq.text())))
+        self.start_freq.editingFinished.connect(self.on_start_freq_change)
         start_freq_layout.addWidget(start_freq_label)
         start_freq_layout.addWidget(self.start_freq)
         ramp_layout.addLayout(start_freq_layout)
         
-        # End Frequency
+        # End Frequency Offset
         end_freq_layout = QHBoxLayout()
-        end_freq_label = QLabel("End Freq (Hz)")
+        end_freq_label = QLabel("End Offset (Hz)")
         end_freq_label.setStyleSheet("color: #E0E0E0;")
         self.end_freq = QLineEdit()
         self.end_freq.setStyleSheet("""
@@ -993,9 +993,9 @@ class MurnauUI(QMainWindow):
                 padding: 4px;
             }
         """)
-        self.end_freq.setValidator(QDoubleValidator(-500, 500, 1))
+        self.end_freq.setValidator(QDoubleValidator(-200, 200, 1))
         self.end_freq.setText("0")
-        self.end_freq.editingFinished.connect(lambda: self.send_osc("/end_freq", float(self.end_freq.text())))
+        self.end_freq.editingFinished.connect(self.on_end_freq_change)
         end_freq_layout.addWidget(end_freq_label)
         end_freq_layout.addWidget(self.end_freq)
         ramp_layout.addLayout(end_freq_layout)
@@ -1016,7 +1016,7 @@ class MurnauUI(QMainWindow):
         """)
         self.ramp_time.setValidator(QDoubleValidator(0, 10, 2))
         self.ramp_time.setText("0")
-        self.ramp_time.editingFinished.connect(lambda: self.send_osc("/ramp_time", float(self.ramp_time.text())))
+        self.ramp_time.editingFinished.connect(self.on_ramp_time_change)
         ramp_time_layout.addWidget(ramp_time_label)
         ramp_time_layout.addWidget(self.ramp_time)
         ramp_layout.addLayout(ramp_time_layout)
@@ -1204,6 +1204,35 @@ class MurnauUI(QMainWindow):
         self.on_coarse_tune_change(0)
         self.on_fine_tune_change(0)
         self.on_stability_change(0)
+        
+        # Initialize ramp controls
+        self.send_osc("/start_freq_offset", 0)
+        self.send_osc("/end_freq_offset", 0)
+        self.send_osc("/ramp_time", 0)
+    
+    def on_start_freq_change(self):
+        """Handle start frequency offset change"""
+        try:
+            value = float(self.start_freq.text())
+            self.send_osc("/start_freq_offset", value)
+        except ValueError:
+            pass
+
+    def on_end_freq_change(self):
+        """Handle end frequency offset change"""
+        try:
+            value = float(self.end_freq.text())
+            self.send_osc("/end_freq_offset", value)
+        except ValueError:
+            pass
+
+    def on_ramp_time_change(self):
+        """Handle ramp time change"""
+        try:
+            value = float(self.ramp_time.text())
+            self.send_osc("/ramp_time", value)
+        except ValueError:
+            pass
     
     def update_midi_ports(self):
         """Update MIDI port selection dropdown"""
