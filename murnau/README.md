@@ -39,9 +39,10 @@ The system consists of the following core components:
 
 1. Start the Faust synthesizer with:
    ```
-   faust2jack legato_synth.dsp
+   faust2jackconsole -osc legato_synth.dsp
    ./legato_synth
    ```
+   This will start the synthesizer with OSC control enabled. The default OSC port is 5510.
 
 2. Launch the UI:
    ```
