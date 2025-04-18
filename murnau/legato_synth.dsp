@@ -1,58 +1,65 @@
-declare name "legato_synth";
-declare description "Monophonic synth with legato capability";
-declare version "1.0";
+declare name "legato_synth_stereo";
+declare description "Monophonic synth with stereo ADSR + filters";
+declare version "1.1";
 
 import("stdfaust.lib");
 
-// Basic parameters
-base_freq = hslider("freq[osc:/freq]", 440, 20, 8000, 0.01);
-
-// Pitch controls
-coarse_tune = hslider("coarse_tune[osc:/coarse_tune]", 0, -24, 24, 1) : int;     // Exact semitones
-fine_tune = hslider("fine_tune[osc:/fine_tune]", 0, -100, 100, 1);         // Cents
-stability = hslider("stability[osc:/stability]", 0, 0, 20, 0.1);           // Random cents range
-
-// Random stability that changes on note-on
-random_stability = gate : ba.sAndH(no.noise * 2 - 1) * stability;  // Generate new random value on gate
-cents_offset = fine_tune + random_stability;        // Combine fine tune and random
-semitones_offset = coarse_tune + (cents_offset * 0.01);  // Convert cents to semitones
-freq = base_freq * pow(2, semitones_offset/12);  // Apply all pitch modifications
-
+// === Gate ===
 gate = button("gate[osc:/gate]");
-gain = hslider("gain[osc:/gain]", 1.0, 0, 1, 0.01);
 
-// Filter parameters
-cutoff = hslider("cutoff[osc:/cutoff]", 2000, 20, 20000, 1);
-resonance = hslider("resonance[osc:/resonance]", 0.5, 0.1, 4, 0.01);  // Minimum of 0.1 to prevent silence
+// === Base Frequency & Tuning ===
+base_freq     = hslider("freq[osc:/freq]", 440, 20, 8000, 0.01);
+coarse_tune   = hslider("coarse_tune[osc:/coarse_tune]", 0, -24, 24, 1) : int;
+fine_tune     = hslider("fine_tune[osc:/fine_tune]", 0, -100, 100, 1);
+stability     = hslider("stability[osc:/stability]", 0, 0, 20, 0.1);
 
-// Waveform selector (0:sine, 1:triangle, 2:saw, 3:square)
+// === Pitch Instability ===
+random_stability  = gate : ba.sAndH(no.noise * 2 - 1) * stability;
+cents_offset      = fine_tune + random_stability;
+semitones_offset  = coarse_tune + (cents_offset * 0.01);
+freq              = base_freq * pow(2, semitones_offset / 12);
+
+// === Envelope Controls (Dual) ===
+attack_L   = hslider("attack_L[osc:/attack_L]", 0.005, 0.001, 5, 0.001);
+decay_L    = hslider("decay_L[osc:/decay_L]", 0.1, 0.001, 3, 0.001);
+sustain_L  = hslider("sustain_L[osc:/sustain_L]", 0.9, 0, 1, 0.01);
+release_L  = hslider("release_L[osc:/release_L]", 0.5, 0.1, 5, 0.01);
+
+attack_R   = hslider("attack_R[osc:/attack_R]", 0.005, 0.001, 5, 0.001);
+decay_R    = hslider("decay_R[osc:/decay_R]", 0.1, 0.001, 3, 0.001);
+sustain_R  = hslider("sustain_R[osc:/sustain_R]", 0.9, 0, 1, 0.01);
+release_R  = hslider("release_R[osc:/release_R]", 0.5, 0.1, 5, 0.01);
+
+// === ADSRs (Dual) ===
+env_L = en.adsr(attack_L, decay_L, sustain_L, release_L, gate);
+env_R = en.adsr(attack_R, decay_R, sustain_R, release_R, gate);
+
+// === Oscillator ===
 wave_type = nentry("wave_type[osc:/wave_type]", 2, 0, 3, 1) : int;
 
-// ADSR envelope with longer sustain and release
-attack = hslider("attack[osc:/attack]", 0.005, 0.001, 5, 0.001);
-decay = hslider("decay[osc:/decay]", 0.1, 0.001, 3, 0.001);
-sustain = hslider("sustain[osc:/sustain]", 0.9, 0, 1, 0.01);
-release = hslider("release[osc:/release]", 0.5, 0.1, 5, 0.01);
+osc_mono = 
+    (wave_type == 0) * os.osc(freq) +
+    (wave_type == 1) * os.triangle(freq) +
+    (wave_type == 2) * os.sawtooth(freq) +
+    (wave_type == 3) * os.square(freq);
 
-// Generate all waveforms
-sine_wave = os.osc(freq);
-triangle_wave = os.triangle(freq);
-saw_wave = os.sawtooth(freq);
-square_wave = os.square(freq);
+// === Duplicate oscillator for stereo path ===
+osc_L = osc_mono * env_L;
+osc_R = osc_mono * env_R;
 
-// Select waveform
-oscillator = 
-    (wave_type == 0) * sine_wave +
-    (wave_type == 1) * triangle_wave +
-    (wave_type == 2) * saw_wave +
-    (wave_type == 3) * square_wave;
+// === Filter Controls (Dual) ===
+cutoffL = hslider("cutoff_L[osc:/cutoff_L]", 2000, 20, 20000, 1);
+resL    = hslider("resonance_L[osc:/resonance_L]", 0.5, 0.1, 4, 0.01);
 
-// Full ADSR envelope for better control
-env = en.adsr(attack, decay, sustain, release, gate);
+cutoffR = hslider("cutoff_R[osc:/cutoff_R]", 2000, 20, 20000, 1);
+resR    = hslider("resonance_R[osc:/resonance_R]", 0.5, 0.1, 4, 0.01);
 
-// Resonant lowpass filter with self-oscillation
-// Using two cascaded resonant filters for 24dB/oct slope
-filtered = oscillator : fi.resonlp(cutoff, resonance, 1.0) : fi.resonlp(cutoff, resonance, 1.0);
+// === Apply Filter (Dual) ===
+sigL = osc_L : fi.resonlp(cutoffL, resL, 1.0) : fi.resonlp(cutoffL, resL, 1.0);
+sigR = osc_R : fi.resonlp(cutoffR, resR, 1.0) : fi.resonlp(cutoffR, resR, 1.0);
 
-// Final output with envelope and gain
-process = filtered * env * gain <: _, _;
+// === Gain Control ===
+gain = hslider("gain[osc:/gain]", 1.0, 0, 1, 0.01);
+
+// === Stereo Output ===
+process = sigL * gain, sigR * gain;

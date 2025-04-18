@@ -11,31 +11,40 @@ import threading
 import time
 import os
 import mido
+from pythonosc import udp_client
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QSlider, 
                            QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
                            QGridLayout, QFrame, QDial, QComboBox, QGroupBox,
-                           QSplashScreen, QCheckBox, QSpacerItem, QSizePolicy)
+                           QSplashScreen, QCheckBox, QSpacerItem, QSizePolicy,
+                           QLineEdit)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize, QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QFont, QPalette, QColor, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QIcon, QFontDatabase
-
-# OSC Communication
-def send_osc(ip, port, address, value):
-    """Send OSC message"""
-    address_bytes = address.encode('utf-8')
-    address_padded = address_bytes + (b'\0' * (4 - len(address_bytes) % 4))
-    
-    type_tag = b',f'
-    type_tag_padded = type_tag + (b'\0' * (4 - len(type_tag) % 4))
-    
-    value_bytes = struct.pack('>f', float(value))
-    
-    message = address_padded + type_tag_padded + value_bytes
-    
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(message, (ip, port))
-    sock.close()
+from PyQt6.QtGui import (QFont, QPalette, QColor, QLinearGradient, QPainter, 
+                        QBrush, QPen, QPixmap, QIcon, QFontDatabase, QDoubleValidator)
 
 # Custom styled knob with value label
+class CustomDial(QDial):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value_text = "0.00"
+        self.setFixedSize(60, 60)
+    
+    def set_value_text(self, text):
+        self.value_text = text
+        self.update()
+    
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw the value text in the center
+        painter.setFont(QFont("Futura", 8))
+        painter.setPen(QPen(QColor("#000000")))
+        
+        rect = self.rect()
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.value_text)
+
 class LabeledKnob(QWidget):
     valueChanged = pyqtSignal(float)
     
@@ -55,39 +64,38 @@ class LabeledKnob(QWidget):
         
         # Create label with name
         self.name_label = QLabel(name)
-        self.name_label.setFont(QFont("Futura", 11))
+        self.name_label.setFont(QFont("Futura", 9))
         self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.name_label.setStyleSheet("color: #E6E6E6;")
         
         # Add MIDI CC label if assigned
         if midi_cc is not None:
-            self.name_label.setText(f"{name} (CC{midi_cc})")
+            self.name_label.setText(f"{name}\n(CC{midi_cc})")
         
-        # Create knob
-        self.knob = QDial()
+        # Create custom knob
+        self.knob = CustomDial()
         self.knob.setMinimum(0)
         self.knob.setMaximum(1000)
         self.knob.setNotchesVisible(True)
         self.knob.setWrapping(False)
-        self.knob.setFixedSize(80, 80)
         self.knob.setStyleSheet("""
             QDial {
                 background-color: #2A2A2A;
                 border: 1px solid #3A3A3A;
-                border-radius: 40px;
+                border-radius: 30px;
             }
             QDial::groove {
                 background: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
                                           stop:0 #8A7A55, stop:1 #5D5236);
-                border-radius: 40px;
+                border-radius: 30px;
             }
             QDial::handle {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                           stop:0 #E5D5A0, stop:1 #C0AA70);
                 border: 1px solid #555555;
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
             }
         """)
         
@@ -95,24 +103,11 @@ class LabeledKnob(QWidget):
         default_pos = self.value_to_knob(default)
         self.knob.setValue(default_pos)
         
-        # Create value label with decorative frame
-        value_frame = QFrame()
-        value_frame.setFrameShape(QFrame.Shape.Panel)
-        value_frame.setFrameShadow(QFrame.Shadow.Sunken)
-        value_frame.setStyleSheet("""
-            background-color: #1A1A1A;
-            border: 1px solid #3A3A3A;
-            border-radius: 3px;
-        """)
-        value_layout = QVBoxLayout(value_frame)
-        value_layout.setContentsMargins(2, 2, 2, 2)
-        
-        self.value_label = QLabel(f"{default:.2f}")
-        self.value_label.setFont(QFont("Futura", 10))
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.value_label.setStyleSheet("color: #D4BF8A;")
-        
-        value_layout.addWidget(self.value_label)
+        # Update the value text
+        if self.is_integer:
+            self.knob.set_value_text(f"{int(default)}")
+        else:
+            self.knob.set_value_text(f"{default:.2f}")
         
         # Connect signal
         self.knob.valueChanged.connect(self.handle_knob_change)
@@ -120,26 +115,11 @@ class LabeledKnob(QWidget):
         # Add widgets to layout
         layout.addWidget(self.name_label)
         layout.addWidget(self.knob)
-        layout.addWidget(value_frame)
         
         # Set layout properties
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
-        
-        # Animation effect for value changes
-        self._animation_timer = QTimer()
-        self._animation_timer.setSingleShot(True)
-        self._animation_timer.timeout.connect(self._reset_label_style)
-        
-    def _animate_value_change(self):
-        """Visual feedback when value changes"""
-        self.value_label.setStyleSheet("color: #FFFFFF; font-weight: bold;")
-        self._animation_timer.start(300)
-        
-    def _reset_label_style(self):
-        """Reset label style after animation"""
-        self.value_label.setStyleSheet("color: #D4BF8A;")
-        
+    
     def value_to_knob(self, value):
         """Convert actual value to knob position"""
         if self.is_log:
@@ -166,10 +146,9 @@ class LabeledKnob(QWidget):
         """Handle knob value change"""
         value = self.knob_to_value(position)
         if self.is_integer:
-            self.value_label.setText(f"{int(value)}")
+            self.knob.set_value_text(f"{int(value)}")
         else:
-            self.value_label.setText(f"{value:.2f}")
-        self._animate_value_change()
+            self.knob.set_value_text(f"{value:.2f}")
         self.valueChanged.emit(value)
     
     def set_value(self, value):
@@ -824,7 +803,10 @@ class MurnauUI(QMainWindow):
         # OSC settings
         self.osc_ip = "127.0.0.1"
         self.osc_port = 5510
-        self.synth_name = "legato_synth"
+        self.synth_name = "legato_synth_stereo"  # Updated to match Faust synth name
+        
+        # Create OSC client
+        self.osc_client = udp_client.SimpleUDPClient(self.osc_ip, self.osc_port)
         
         # MIDI settings
         self.midi_input = None
@@ -939,59 +921,204 @@ class MurnauUI(QMainWindow):
         right_section = QHBoxLayout()
         
         # Pitch control section
-        pitch_group = QGroupBox("Pitch")
-        pitch_layout = QHBoxLayout()
+        pitch_group = QGroupBox("Pitch Controls")
+        pitch_layout = QVBoxLayout()
         
-        self.stability_knob = LabeledKnob("Stability", 0, 20, 0, midi_cc=4)  # CC4 is foot control, repurposed
-        self.stability_knob.valueChanged.connect(self.on_stability_change)
-        pitch_layout.addWidget(self.stability_knob)
+        # Coarse Tune
+        coarse_layout = QHBoxLayout()
+        coarse_label = QLabel("Coarse Tune")
+        coarse_label.setStyleSheet("color: #E0E0E0;")
+        self.coarse_tune = LabeledKnob("Coarse", -24, 24, 0, midi_cc=2, is_integer=True)
+        self.coarse_tune.valueChanged.connect(self.on_coarse_tune_change)
+        coarse_layout.addWidget(coarse_label)
+        coarse_layout.addWidget(self.coarse_tune)
+        pitch_layout.addLayout(coarse_layout)
         
-        self.coarse_tune_knob = LabeledKnob("Coarse", -24, 24, 0, midi_cc=2, is_integer=True)  # CC2 is breath control, repurposed
-        self.coarse_tune_knob.valueChanged.connect(self.on_coarse_tune_change)
-        self.coarse_tune_knob.knob.setNotchTarget(1.0)  # Force whole number steps
-        pitch_layout.addWidget(self.coarse_tune_knob)
+        # Fine Tune
+        fine_layout = QHBoxLayout()
+        fine_label = QLabel("Fine Tune")
+        fine_label.setStyleSheet("color: #E0E0E0;")
+        self.fine_tune = LabeledKnob("Fine", -100, 100, 0, midi_cc=3)
+        self.fine_tune.valueChanged.connect(self.on_fine_tune_change)
+        fine_layout.addWidget(fine_label)
+        fine_layout.addWidget(self.fine_tune)
+        pitch_layout.addLayout(fine_layout)
         
-        self.fine_tune_knob = LabeledKnob("Fine", -100, 100, 0, midi_cc=3)  # CC3 is undefined, using for fine tune
-        self.fine_tune_knob.valueChanged.connect(self.on_fine_tune_change)
-        pitch_layout.addWidget(self.fine_tune_knob)
+        # Stability
+        stability_layout = QHBoxLayout()
+        stability_label = QLabel("Stability")
+        stability_label.setStyleSheet("color: #E0E0E0;")
+        self.stability = LabeledKnob("Stability", 0, 20, 0, midi_cc=4)
+        self.stability.valueChanged.connect(self.on_stability_change)
+        stability_layout.addWidget(stability_label)
+        stability_layout.addWidget(self.stability)
+        pitch_layout.addLayout(stability_layout)
+        
+        # Frequency Ramp Controls
+        ramp_group = QGroupBox("Frequency Ramp")
+        ramp_layout = QVBoxLayout()
+        
+        # Start Frequency
+        start_freq_layout = QHBoxLayout()
+        start_freq_label = QLabel("Start Freq (Hz)")
+        start_freq_label.setStyleSheet("color: #E0E0E0;")
+        self.start_freq = QLineEdit()
+        self.start_freq.setStyleSheet("""
+            QLineEdit {
+                background-color: #2A2A2A;
+                color: #E0E0E0;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+        self.start_freq.setValidator(QDoubleValidator(-500, 500, 1))
+        self.start_freq.setText("0")
+        self.start_freq.editingFinished.connect(lambda: self.send_osc("/start_freq", float(self.start_freq.text())))
+        start_freq_layout.addWidget(start_freq_label)
+        start_freq_layout.addWidget(self.start_freq)
+        ramp_layout.addLayout(start_freq_layout)
+        
+        # End Frequency
+        end_freq_layout = QHBoxLayout()
+        end_freq_label = QLabel("End Freq (Hz)")
+        end_freq_label.setStyleSheet("color: #E0E0E0;")
+        self.end_freq = QLineEdit()
+        self.end_freq.setStyleSheet("""
+            QLineEdit {
+                background-color: #2A2A2A;
+                color: #E0E0E0;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+        self.end_freq.setValidator(QDoubleValidator(-500, 500, 1))
+        self.end_freq.setText("0")
+        self.end_freq.editingFinished.connect(lambda: self.send_osc("/end_freq", float(self.end_freq.text())))
+        end_freq_layout.addWidget(end_freq_label)
+        end_freq_layout.addWidget(self.end_freq)
+        ramp_layout.addLayout(end_freq_layout)
+        
+        # Ramp Time
+        ramp_time_layout = QHBoxLayout()
+        ramp_time_label = QLabel("Ramp Time (s)")
+        ramp_time_label.setStyleSheet("color: #E0E0E0;")
+        self.ramp_time = QLineEdit()
+        self.ramp_time.setStyleSheet("""
+            QLineEdit {
+                background-color: #2A2A2A;
+                color: #E0E0E0;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+        self.ramp_time.setValidator(QDoubleValidator(0, 10, 2))
+        self.ramp_time.setText("0")
+        self.ramp_time.editingFinished.connect(lambda: self.send_osc("/ramp_time", float(self.ramp_time.text())))
+        ramp_time_layout.addWidget(ramp_time_label)
+        ramp_time_layout.addWidget(self.ramp_time)
+        ramp_layout.addLayout(ramp_time_layout)
+        
+        ramp_group.setLayout(ramp_layout)
+        pitch_layout.addWidget(ramp_group)
         
         pitch_group.setLayout(pitch_layout)
         right_section.addWidget(pitch_group)
         
         # Filter section
         filter_group = QGroupBox("Filter")
-        filter_layout = QHBoxLayout()
+        filter_layout = QVBoxLayout()
         
-        self.cutoff_knob = LabeledKnob("Cutoff", 20, 20000, 2000, is_log=True, midi_cc=74)  # CC74 is filter cutoff
-        self.cutoff_knob.valueChanged.connect(self.on_cutoff_change)
-        filter_layout.addWidget(self.cutoff_knob)
+        # Left channel filter
+        left_filter_layout = QHBoxLayout()
+        left_filter_label = QLabel("Left Channel")
+        left_filter_label.setStyleSheet("color: #E0E0E0;")
+        self.cutoff_knob_L = LabeledKnob("Cutoff", 20, 20000, 2000, is_log=True, midi_cc=74)  # CC74 is filter cutoff
+        self.cutoff_knob_L.valueChanged.connect(lambda v: self.send_osc("/cutoff_L", v))
+        self.resonance_knob_L = LabeledKnob("Resonance", 0.1, 4, 0.5, midi_cc=71)  # Minimum of 0.1 to prevent silence
+        self.resonance_knob_L.valueChanged.connect(lambda v: self.send_osc("/resonance_L", v))
+        left_filter_layout.addWidget(left_filter_label)
+        left_filter_layout.addWidget(self.cutoff_knob_L)
+        left_filter_layout.addWidget(self.resonance_knob_L)
+        filter_layout.addLayout(left_filter_layout)
         
-        self.resonance_knob = LabeledKnob("Resonance", 0.1, 4, 0.5, midi_cc=71)  # Minimum of 0.1 to prevent silence
-        self.resonance_knob.valueChanged.connect(self.on_resonance_change)
-        filter_layout.addWidget(self.resonance_knob)
+        # Right channel filter
+        right_filter_layout = QHBoxLayout()
+        right_filter_label = QLabel("Right Channel")
+        right_filter_label.setStyleSheet("color: #E0E0E0;")
+        self.cutoff_knob_R = LabeledKnob("Cutoff", 20, 20000, 2000, is_log=True, midi_cc=75)  # Using CC75 for right channel
+        self.cutoff_knob_R.valueChanged.connect(lambda v: self.send_osc("/cutoff_R", v))
+        self.resonance_knob_R = LabeledKnob("Resonance", 0.1, 4, 0.5, midi_cc=76)  # Using CC76 for right channel
+        self.resonance_knob_R.valueChanged.connect(lambda v: self.send_osc("/resonance_R", v))
+        right_filter_layout.addWidget(right_filter_label)
+        right_filter_layout.addWidget(self.cutoff_knob_R)
+        right_filter_layout.addWidget(self.resonance_knob_R)
+        filter_layout.addLayout(right_filter_layout)
         
         filter_group.setLayout(filter_layout)
         right_section.addWidget(filter_group)
         
-        # ADSR knobs
+        # ADSR knobs (Dual)
         adsr_group = QGroupBox("Envelope")
-        adsr_layout = QHBoxLayout()
+        adsr_layout = QVBoxLayout()  # Changed to vertical layout
         
-        self.attack_slider = LabeledKnob("Attack", 0.001, 5.0, 0.005, midi_cc=73)  # Up to 5 seconds
-        self.attack_slider.valueChanged.connect(self.on_attack_change)
-        adsr_layout.addWidget(self.attack_slider)
+        # Left channel ADSR
+        left_adsr_group = QGroupBox("Left Channel")
+        left_adsr_layout = QHBoxLayout()
+        left_adsr_layout.setSpacing(10)  # Reduce spacing between knobs
         
-        self.decay_slider = LabeledKnob("Decay", 0.001, 3.0, 0.1, midi_cc=75)  # Up to 3 seconds
-        self.decay_slider.valueChanged.connect(self.on_decay_change)
-        adsr_layout.addWidget(self.decay_slider)
+        self.attack_slider_L = LabeledKnob("Attack", 0.001, 5.0, 0.005, midi_cc=73)
+        self.attack_slider_L.valueChanged.connect(self.on_attack_L_change)
+        self.attack_slider_L.setFixedSize(70, 100)  # Make knobs more compact
+        left_adsr_layout.addWidget(self.attack_slider_L)
         
-        self.sustain_slider = LabeledKnob("Sustain", 0.0, 1.0, 0.9, midi_cc=31)  # 0-1 range (unchanged)
-        self.sustain_slider.valueChanged.connect(self.on_sustain_change)
-        adsr_layout.addWidget(self.sustain_slider)
+        self.decay_slider_L = LabeledKnob("Decay", 0.001, 3.0, 0.1, midi_cc=75)
+        self.decay_slider_L.valueChanged.connect(self.on_decay_L_change)
+        self.decay_slider_L.setFixedSize(70, 100)
+        left_adsr_layout.addWidget(self.decay_slider_L)
         
-        self.release_slider = LabeledKnob("Release", 0.1, 5.0, 0.5, midi_cc=72)  # Up to 5 seconds
-        self.release_slider.valueChanged.connect(self.on_release_change)
-        adsr_layout.addWidget(self.release_slider)
+        self.sustain_slider_L = LabeledKnob("Sustain", 0.0, 1.0, 0.9, midi_cc=31)
+        self.sustain_slider_L.valueChanged.connect(self.on_sustain_L_change)
+        self.sustain_slider_L.setFixedSize(70, 100)
+        left_adsr_layout.addWidget(self.sustain_slider_L)
+        
+        self.release_slider_L = LabeledKnob("Release", 0.1, 5.0, 0.5, midi_cc=72)
+        self.release_slider_L.valueChanged.connect(self.on_release_L_change)
+        self.release_slider_L.setFixedSize(70, 100)
+        left_adsr_layout.addWidget(self.release_slider_L)
+        
+        left_adsr_group.setLayout(left_adsr_layout)
+        adsr_layout.addWidget(left_adsr_group)
+        
+        # Right channel ADSR
+        right_adsr_group = QGroupBox("Right Channel")
+        right_adsr_layout = QHBoxLayout()
+        right_adsr_layout.setSpacing(10)  # Reduce spacing between knobs
+        
+        self.attack_slider_R = LabeledKnob("Attack", 0.001, 5.0, 0.005, midi_cc=74)
+        self.attack_slider_R.valueChanged.connect(self.on_attack_R_change)
+        self.attack_slider_R.setFixedSize(70, 100)
+        right_adsr_layout.addWidget(self.attack_slider_R)
+        
+        self.decay_slider_R = LabeledKnob("Decay", 0.001, 3.0, 0.1, midi_cc=76)
+        self.decay_slider_R.valueChanged.connect(self.on_decay_R_change)
+        self.decay_slider_R.setFixedSize(70, 100)
+        right_adsr_layout.addWidget(self.decay_slider_R)
+        
+        self.sustain_slider_R = LabeledKnob("Sustain", 0.0, 1.0, 0.9, midi_cc=32)
+        self.sustain_slider_R.valueChanged.connect(self.on_sustain_R_change)
+        self.sustain_slider_R.setFixedSize(70, 100)
+        right_adsr_layout.addWidget(self.sustain_slider_R)
+        
+        self.release_slider_R = LabeledKnob("Release", 0.1, 5.0, 0.5, midi_cc=77)
+        self.release_slider_R.valueChanged.connect(self.on_release_R_change)
+        self.release_slider_R.setFixedSize(70, 100)
+        right_adsr_layout.addWidget(self.release_slider_R)
+        
+        right_adsr_group.setLayout(right_adsr_layout)
+        adsr_layout.addWidget(right_adsr_group)
         
         adsr_group.setLayout(adsr_layout)
         right_section.addWidget(adsr_group)
@@ -1054,12 +1181,26 @@ class MurnauUI(QMainWindow):
         # Send initial parameter values
         self.on_gain_change(1.0)
         self.on_waveform_change(2)  # sawtooth
-        self.on_attack_change(0.005)
-        self.on_decay_change(0.1)
-        self.on_sustain_change(0.9)
-        self.on_release_change(0.5)
-        self.on_cutoff_change(2000)
-        self.on_resonance_change(0.5)
+        
+        # Initialize left channel ADSR
+        self.on_attack_L_change(0.005)
+        self.on_decay_L_change(0.1)
+        self.on_sustain_L_change(0.9)
+        self.on_release_L_change(0.5)
+        
+        # Initialize right channel ADSR
+        self.on_attack_R_change(0.005)
+        self.on_decay_R_change(0.1)
+        self.on_sustain_R_change(0.9)
+        self.on_release_R_change(0.5)
+        
+        # Initialize both L/R filter controls
+        self.on_cutoff_L_change(2000)
+        self.on_cutoff_R_change(2000)
+        self.on_resonance_L_change(0.5)
+        self.on_resonance_R_change(0.5)
+        
+        # Initialize pitch controls
         self.on_coarse_tune_change(0)
         self.on_fine_tune_change(0)
         self.on_stability_change(0)
@@ -1176,11 +1317,11 @@ class MurnauUI(QMainWindow):
                              (now - self.last_gate_off_time < self.LEGATO_THRESHOLD))
                 
                 # Set frequency first
-                send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/freq", freq)
+                self.send_osc("/freq", freq)
                 
                 # If not in legato mode or no current note, send gate on
                 if not use_legato or self.current_note is None:
-                    send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 1.0)
+                    self.send_osc("/gate", 1.0)
                 
                 self.current_note = message.note
                 
@@ -1204,11 +1345,11 @@ class MurnauUI(QMainWindow):
                         next_freq = self.active_notes[next_note]
                         
                         # Set the new frequency
-                        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/freq", next_freq)
+                        self.send_osc("/freq", next_freq)
                         self.current_note = next_note
                     else:
                         # No more active notes, turn off gate
-                        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 0.0)
+                        self.send_osc("/gate", 0.0)
                         self.last_gate_off_time = time.time()
                         self.current_note = None
                 
@@ -1224,76 +1365,127 @@ class MurnauUI(QMainWindow):
                 if cc == self.waveform_selector.midi_cc:  # Modwheel for waveform
                     self.waveform_selector.set_from_midi_cc(value)
                 
-                elif cc == self.attack_slider.midi_cc:  # Attack
-                    self.attack_slider.set_from_midi_cc(value)
+                elif cc == self.attack_slider_L.midi_cc:  # Left channel attack
+                    self.on_attack_L_change(value)
                 
-                elif cc == self.decay_slider.midi_cc:  # Decay
-                    self.decay_slider.set_from_midi_cc(value)
+                elif cc == self.decay_slider_L.midi_cc:  # Left channel decay
+                    self.on_decay_L_change(value)
                 
-                elif cc == self.sustain_slider.midi_cc:  # Sustain
-                    self.sustain_slider.set_from_midi_cc(value)
+                elif cc == self.sustain_slider_L.midi_cc:  # Left channel sustain
+                    self.on_sustain_L_change(value)
                 
-                elif cc == self.release_slider.midi_cc:  # Release
-                    self.release_slider.set_from_midi_cc(value)
+                elif cc == self.release_slider_L.midi_cc:  # Left channel release
+                    self.on_release_L_change(value)
                 
-                elif cc == self.gain_slider.midi_cc:  # Main volume
-                    self.gain_slider.set_from_midi_cc(value)
+                elif cc == self.attack_slider_R.midi_cc:  # Right channel attack
+                    self.on_attack_R_change(value)
+                
+                elif cc == self.decay_slider_R.midi_cc:  # Right channel decay
+                    self.on_decay_R_change(value)
+                
+                elif cc == self.sustain_slider_R.midi_cc:  # Right channel sustain
+                    self.on_sustain_R_change(value)
+                
+                elif cc == self.release_slider_R.midi_cc:  # Right channel release
+                    self.on_release_R_change(value)
+                
+                elif cc == self.cutoff_knob_L.midi_cc:  # Left channel filter cutoff
+                    self.on_cutoff_L_change(value)
+                
+                elif cc == self.cutoff_knob_R.midi_cc:  # Right channel filter cutoff
+                    self.on_cutoff_R_change(value)
+                
+                elif cc == self.resonance_knob_L.midi_cc:  # Left channel filter resonance
+                    self.on_resonance_L_change(value)
+                
+                elif cc == self.resonance_knob_R.midi_cc:  # Right channel filter resonance
+                    self.on_resonance_R_change(value)
         
         except Exception as e:
             print(f"Error handling MIDI message: {e}")
     
     def on_gain_change(self, value):
         """Handle gain change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gain", value)
+        self.send_osc("/gain", value)
     
     def on_waveform_change(self, index):
         """Handle waveform change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/wave_type", index)
+        self.send_osc("/wave_type", index)
     
-    def on_attack_change(self, value):
-        """Handle attack change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/attack", value)
+    def on_attack_L_change(self, value):
+        """Handle left channel attack change"""
+        self.send_osc("/attack_L", value)
     
-    def on_decay_change(self, value):
-        """Handle decay change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/decay", value)
+    def on_decay_L_change(self, value):
+        """Handle left channel decay change"""
+        self.send_osc("/decay_L", value)
     
-    def on_sustain_change(self, value):
-        """Handle sustain change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/sustain", value)
+    def on_sustain_L_change(self, value):
+        """Handle left channel sustain change"""
+        self.send_osc("/sustain_L", value)
     
-    def on_release_change(self, value):
-        """Handle release change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/release", value)
+    def on_release_L_change(self, value):
+        """Handle left channel release change"""
+        self.send_osc("/release_L", value)
     
-    def on_note_on(self, frequency):
-        """Handle note on from UI"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/freq", frequency)
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 1.0)
+    def on_attack_R_change(self, value):
+        """Handle right channel attack change"""
+        self.send_osc("/attack_R", value)
     
-    def on_note_off(self):
-        """Handle note off from UI"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 0.0)
-        
-    def on_cutoff_change(self, value):
-        """Handle filter cutoff change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/cutoff", value)
+    def on_decay_R_change(self, value):
+        """Handle right channel decay change"""
+        self.send_osc("/decay_R", value)
     
-    def on_resonance_change(self, value):
-        """Handle filter resonance change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/resonance", value)
+    def on_sustain_R_change(self, value):
+        """Handle right channel sustain change"""
+        self.send_osc("/sustain_R", value)
+    
+    def on_release_R_change(self, value):
+        """Handle right channel release change"""
+        self.send_osc("/release_R", value)
+    
+    def on_cutoff_L_change(self, value):
+        """Handle left channel filter cutoff change"""
+        self.send_osc("/cutoff_L", value)
+    
+    def on_cutoff_R_change(self, value):
+        """Handle right channel filter cutoff change"""
+        self.send_osc("/cutoff_R", value)
+    
+    def on_resonance_L_change(self, value):
+        """Handle left channel filter resonance change"""
+        self.send_osc("/resonance_L", value)
+    
+    def on_resonance_R_change(self, value):
+        """Handle right channel filter resonance change"""
+        self.send_osc("/resonance_R", value)
     
     def on_coarse_tune_change(self, value):
         """Handle coarse tune change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/coarse_tune", value)
+        self.send_osc("/coarse_tune", value)
     
     def on_fine_tune_change(self, value):
         """Handle fine tune change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/fine_tune", value)
+        self.send_osc("/fine_tune", value)
     
     def on_stability_change(self, value):
         """Handle stability change"""
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/stability", value)
+        self.send_osc("/stability", value)
+    
+    def send_osc(self, address, value):
+        """Send OSC message"""
+        # Add synth name to the address path
+        full_address = f"/{self.synth_name}{address}"
+        self.osc_client.send_message(full_address, float(value))
+    
+    def on_note_on(self, frequency):
+        """Handle note on from UI"""
+        self.send_osc("/freq", frequency)
+        self.send_osc("/gate", 1.0)
+    
+    def on_note_off(self):
+        """Handle note off from UI"""
+        self.send_osc("/gate", 0.0)
     
     def closeEvent(self, event):
         """Handle window close event"""
@@ -1301,7 +1493,7 @@ class MurnauUI(QMainWindow):
         self.stop_midi()
         
         # Turn off any sound
-        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/gate", 0.0)
+        self.send_osc("/gate", 0.0)
         
         # Accept the event
         event.accept()
@@ -1312,7 +1504,7 @@ if __name__ == "__main__":
     import math
     
     # Allow custom synth name and OSC port
-    synth_name = "legato_synth"
+    synth_name = "legato_synth_stereo"
     osc_port = 5510
     
     if len(sys.argv) > 1:

@@ -1,0 +1,13 @@
+# Core dependencies
+pyo
+PyQt5
+PyQt6
+mido
+PyYAML
+
+# Additional dependencies
+numpy
+python-rtmidi
+
+# OSC (Open Sound Control) communication
+python-osc
