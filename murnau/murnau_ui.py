@@ -39,13 +39,14 @@ def send_osc(ip, port, address, value):
 class LabeledKnob(QWidget):
     valueChanged = pyqtSignal(float)
     
-    def __init__(self, name, min_val, max_val, default, is_log=False, parent=None, midi_cc=None):
+    def __init__(self, name, min_val, max_val, default, is_log=False, parent=None, midi_cc=None, is_integer=False):
         super().__init__(parent)
         self.name = name
         self.min_val = min_val
         self.max_val = max_val
         self.is_log = is_log
         self.midi_cc = midi_cc
+        self.is_integer = is_integer
         
         # Main layout
         layout = QVBoxLayout(self)
@@ -164,7 +165,10 @@ class LabeledKnob(QWidget):
     def handle_knob_change(self, position):
         """Handle knob value change"""
         value = self.knob_to_value(position)
-        self.value_label.setText(f"{value:.2f}")
+        if self.is_integer:
+            self.value_label.setText(f"{int(value)}")
+        else:
+            self.value_label.setText(f"{value:.2f}")
         self._animate_value_change()
         self.valueChanged.emit(value)
     
@@ -934,6 +938,26 @@ class MurnauUI(QMainWindow):
         # Right side - Controls
         right_section = QHBoxLayout()
         
+        # Pitch control section
+        pitch_group = QGroupBox("Pitch")
+        pitch_layout = QHBoxLayout()
+        
+        self.stability_knob = LabeledKnob("Stability", 0, 20, 0, midi_cc=4)  # CC4 is foot control, repurposed
+        self.stability_knob.valueChanged.connect(self.on_stability_change)
+        pitch_layout.addWidget(self.stability_knob)
+        
+        self.coarse_tune_knob = LabeledKnob("Coarse", -24, 24, 0, midi_cc=2, is_integer=True)  # CC2 is breath control, repurposed
+        self.coarse_tune_knob.valueChanged.connect(self.on_coarse_tune_change)
+        self.coarse_tune_knob.knob.setNotchTarget(1.0)  # Force whole number steps
+        pitch_layout.addWidget(self.coarse_tune_knob)
+        
+        self.fine_tune_knob = LabeledKnob("Fine", -100, 100, 0, midi_cc=3)  # CC3 is undefined, using for fine tune
+        self.fine_tune_knob.valueChanged.connect(self.on_fine_tune_change)
+        pitch_layout.addWidget(self.fine_tune_knob)
+        
+        pitch_group.setLayout(pitch_layout)
+        right_section.addWidget(pitch_group)
+        
         # Filter section
         filter_group = QGroupBox("Filter")
         filter_layout = QHBoxLayout()
@@ -1034,8 +1058,11 @@ class MurnauUI(QMainWindow):
         self.on_decay_change(0.1)
         self.on_sustain_change(0.9)
         self.on_release_change(0.5)
-        self.on_cutoff_change(2000)  # Initial cutoff
-        self.on_resonance_change(0.5)  # Initial resonance
+        self.on_cutoff_change(2000)
+        self.on_resonance_change(0.5)
+        self.on_coarse_tune_change(0)
+        self.on_fine_tune_change(0)
+        self.on_stability_change(0)
     
     def update_midi_ports(self):
         """Update MIDI port selection dropdown"""
@@ -1255,6 +1282,18 @@ class MurnauUI(QMainWindow):
     def on_resonance_change(self, value):
         """Handle filter resonance change"""
         send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/resonance", value)
+    
+    def on_coarse_tune_change(self, value):
+        """Handle coarse tune change"""
+        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/coarse_tune", value)
+    
+    def on_fine_tune_change(self, value):
+        """Handle fine tune change"""
+        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/fine_tune", value)
+    
+    def on_stability_change(self, value):
+        """Handle stability change"""
+        send_osc(self.osc_ip, self.osc_port, f"/{self.synth_name}/stability", value)
     
     def closeEvent(self, event):
         """Handle window close event"""

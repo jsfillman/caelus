@@ -5,7 +5,19 @@ declare version "1.0";
 import("stdfaust.lib");
 
 // Basic parameters
-freq = hslider("freq[osc:/freq]", 440, 20, 8000, 0.01);
+base_freq = hslider("freq[osc:/freq]", 440, 20, 8000, 0.01);
+
+// Pitch controls
+coarse_tune = hslider("coarse_tune[osc:/coarse_tune]", 0, -24, 24, 1) : int;     // Exact semitones
+fine_tune = hslider("fine_tune[osc:/fine_tune]", 0, -100, 100, 1);         // Cents
+stability = hslider("stability[osc:/stability]", 0, 0, 20, 0.1);           // Random cents range
+
+// Random stability that changes on note-on
+random_stability = gate : ba.sAndH(no.noise * 2 - 1) * stability;  // Generate new random value on gate
+cents_offset = fine_tune + random_stability;        // Combine fine tune and random
+semitones_offset = coarse_tune + (cents_offset * 0.01);  // Convert cents to semitones
+freq = base_freq * pow(2, semitones_offset/12);  // Apply all pitch modifications
+
 gate = button("gate[osc:/gate]");
 gain = hslider("gain[osc:/gain]", 1.0, 0, 1, 0.01);
 
