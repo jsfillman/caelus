@@ -1,0 +1,38 @@
+# Python virtual environment
+venv/
+env/
+ENV/
+.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Faust compiled binaries and related files
+faust.*
+simple
+simple.cpp
+*.app
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Log files
+*.log
+
+# Local configuration
+.vscode/
+.idea/
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Cache directories
+.cache/
+.pytest_cache/ 

@@ -1,0 +1,17 @@
+# OSC Router Voice Configuration
+
+# Global settings
+settings:
+  synth_name: simple  # Name of the Faust synth
+  synth_host: 127.0.0.1  # Host where Faust instances are running
+
+# Voice definitions
+voices:
+  - id: voice1
+    port: 5510  # Base port
+  - id: voice2
+    port: 5610  # Base port + 100
+  - id: voice3
+    port: 5710  # Base port + 200
+  - id: voice4
+    port: 5810  # Base port + 300 
