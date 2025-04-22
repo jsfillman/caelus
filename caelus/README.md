@@ -1,131 +1,132 @@
-# Caelus
+# MIDI-OSC Polyphonic Router for Faust
 
-![Caelus](Caelus-Transparent.png)
-
-Caelus is an advanced, modular FM synthesis engine built with Python and the `pyo` audio processing library. It provides a flexible, high-quality framework for creating complex FM sounds with extensive modulation capabilities.
+A polyphonic MIDI-to-OSC bridge and router system that allows distributing MIDI events across multiple Faust synthesizer instances to achieve polyphony, even with monophonic synths.
 
 ## Overview
 
-Caelus implements a sophisticated FM synthesis architecture with the following features:
+This project solves a common limitation with Faust synthesizers: while Faust has internal polyphony support, its OSC interface doesn't expose this functionality. This system allows you to:
 
-- Multiple operator FM synthesis
-- Extensive modulation capabilities with time-varying parameters
-- Parameter ramping for dynamic timbral evolution
-- MIDI input with monophonic / MPE capabilities and aftertouch support
-- Comprehensive GUI controls for all synthesis parameters
-- High-quality audio output with proper limiting and 3d spatialization
+1. Convert MIDI messages to OSC commands
+2. Route note events to multiple Faust instances running on different ports
+3. Handle sustain pedal, modulation wheel, and other MIDI controllers properly
+4. Support voice allocation with highest-note priority
 
-## Core Components
-
-The synthesis engine is built around these key components:
-
-1. **Operator System**: Independent oscillators that can function as carriers or modulators
-2. **Envelope System**: ADSR envelopes for both amplitude and frequency modulation
-3. **Ramping System**: Linear segment generators (Linseg) for time-based parameter evolution
-4. **MIDI Interface**: Real-time MIDI input with note priority management
-5. **GUI System**: Comprehensive control interface for all synthesis parameters
-
-## Architecture
-
-The current architecture supports multiple configurations:
-
-- **MegaPartial**: A complex FM synthesizer with 12 modulators arranged in various FM and AM chains
-
-## Getting Started
+## Installation
 
 ### Prerequisites
 
-- Python 3.7+
-- pyo audio library
-- mido for MIDI handling
+- [Python 3.6+](https://www.python.org/downloads/)
+- [Faust](https://faust.grame.fr/downloads/) (2.5 or higher recommended)
+- Python dependencies:
+  - mido
+  - python-osc (pythonosc)
+  - pyyaml
 
-### Installation
-
-```bash
-pip install pyo mido
-```
-
-### Running the Synthesizer
-
-To start the basic synthesizer:
+### Installing Python Dependencies
 
 ```bash
-python mega-partial-2op.py
+pip install mido python-osc pyyaml
 ```
 
-For the more advanced implementation:
+### Compiling Faust Synth
+
+1. Place your Faust DSP file in the project directory (see `simple.dsp` for an example)
+2. Compile it using faust2jackconsole:
 
 ```bash
-python mega-partial.py
+faust2jackconsole -osc simple.dsp
 ```
 
-## Parameter Guide
+This creates a standalone executable that can receive OSC messages.
 
-### Operator Controls
+## Configuration
 
-Each operator has the following parameters:
+Edit `voices.yaml` to configure the voice instances:
 
-- **Ratio**: The frequency ratio relative to the carrier frequency
+```yaml
+# Global settings
+settings:
+  synth_name: simple  # Name of the Faust synth
+  synth_host: 127.0.0.1  # Host where Faust instances are running
 
-- **Index**: The modulation depth (how much this operator affects others)
+# Voice definitions
+voices:
+  - id: voice1
+    port: 5510  # Base port
+  - id: voice2
+    port: 5610  # Base port + 100
+  - id: voice3
+    port: 5710  # Base port + 200
+  - id: voice4
+    port: 5810  # Base port + 300
+```
 
-- **Frequency Offset**: Static offset in Hz added to the operator's frequency
+Each voice corresponds to a separate Faust instance running on a different port.
 
-- **Envelope Controls**: Attack, Decay, Sustain, Release for both amplitude and frequency
+## Usage
 
-- Ramp Parameters
+### 1. Launch Faust Instances
 
-  :
+Use the `launch_poly_synth.sh` script to start multiple instances of your Faust synth:
 
-  - Frequency Ramp: Start value, end value, and duration
-  - Amplitude Ramp: Start value, end value, and duration
+```bash
+./launch_poly_synth.sh
+```
 
-- **Delay**: Time delay before envelope triggering
+This script starts each instance on the ports specified in your `voices.yaml` file.
 
-### FM Routing
+### 2. Start the OSC Router
 
-The operators are arranged in a serial configuration:
+```bash
+python osc_router.py --config voices.yaml
+```
 
-- Series: Op1 → Op2 → Carrier
+This starts the OSC router, which listens for messages from the MIDI-OSC bridge and routes them to the appropriate Faust instance.
 
-## Development Roadmap
+### 3. Start the MIDI-OSC Bridge
 
-### 1. Server Capabilities
+```bash
+python 01-midi-osc.py [router_port]
+```
 
-- Implement OSC (Open Sound Control) server functionality
-- Create network-accessible endpoints for remote control
-- Support for remote MIDI input over network
-- Parameter state saving and loading
+Where `router_port` is the port where the OSC router is listening (default: 9000).
 
-### 2. Remote Control Interfaces
+The script will prompt you to select a MIDI input device, then begin sending MIDI events to the router as OSC messages.
 
-- TouchOSC layout design
-- Lemur interface implementation
-- WebSocket API for browser-based control
+## Features
 
-### 3. Custom GUI
+- **Polyphonic Voice Allocation**: Allocates MIDI notes to available voices
+- **Sustain Pedal Support**: Properly handles notes held by sustain pedal
+- **Modulation Wheel**: Maps to filter cutoff by default
+- **Expression Pedal**: Also maps to filter cutoff with independent control
+- **Pitch Bend**: Affects active notes uniformly
+- **Aftertouch**: Supports both channel and polyphonic aftertouch
 
-- Develop Svelte + Tailwind interface
-- Design intuitive parameter visualization
-- Implement preset management system
-- Create visual feedback for modulation activity
+## How It Works
 
-### 4. Extended Features
+1. The MIDI-OSC bridge (`01-midi-osc.py`) converts MIDI messages to OSC messages:
+   - Note on → `/router/note_on [note] [velocity]`
+   - Note off → `/router/note_off [note]`
+   - CC messages → `/router/cc [cc_num] [value]`
 
-- Multiple voice polyphony via multi-channel MPE
-- Additional synthesis algorithms by adding mulitple "mega partials" per channel
-- Effects processing chain
-- Sample recording and export
+2. The OSC router (`osc_router.py`) receives these messages and:
+   - Allocates notes to available voices
+   - Manages sustain, modulation, and other controllers
+   - Forwards messages to the correct Faust instance
 
-## Contributing
+3. Multiple Faust instances, each running on its own port, receive and process the OSC messages.
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Limitations
+
+- The voice allocation currently uses a simple highest-note priority algorithm
+- All Faust instances must use the same OSC message format
 
 ## License
 
-[License details here]
+This project is open source under the MIT license.
 
-## Acknowledgments
+## Acknowledgements
 
-- Built with the powerful pyo audio processing library
-- Inspired by classic FM synthesizers like the Yamaha DX7 and modern FM implementations
+- [Faust](https://faust.grame.fr/) by GRAME-CNCM
+- [python-osc](https://github.com/attwad/python-osc)
+- [mido](https://github.com/mido/mido) 
