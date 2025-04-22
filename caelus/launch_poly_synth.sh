@@ -129,6 +129,7 @@ function cleanup {
 
 trap cleanup INT TERM
 
+python3 ui.py &
 # Start MIDI-OSC Bridge in foreground
 echo "Starting MIDI-OSC Bridge..."
 echo "NOTE: Select your MIDI input device when prompted"
