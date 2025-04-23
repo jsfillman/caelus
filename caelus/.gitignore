@@ -13,8 +13,6 @@ __pycache__/
 
 # Faust compiled binaries and related files
 faust.*
-simple
-simple.cpp
 *.app
 
 # Distribution / packaging
