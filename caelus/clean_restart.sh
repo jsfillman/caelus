@@ -15,6 +15,16 @@ else
     echo "No existing OSC router processes found."
 fi
 
+# Kill any existing stuck note monitors
+MONITOR_PIDS=$(ps aux | grep "python.*fix_stuck_notes" | grep -v grep | awk '{print $2}')
+if [ -n "$MONITOR_PIDS" ]; then
+    echo "Killing existing stuck note monitor processes: $MONITOR_PIDS"
+    kill $MONITOR_PIDS
+    sleep 1
+else
+    echo "No existing stuck note monitor processes found."
+fi
+
 # Check specific port 9000 (the conflicting one)
 PORT_9000=$(lsof -i :9000 | grep -v "PID" | awk '{print $2}')
 if [ -n "$PORT_9000" ]; then
@@ -32,6 +42,12 @@ if [ -n "$PORT_9001" ]; then
     exit 1
 fi
 
+# Start the stuck note monitor in the background
+echo "Starting stuck note monitor..."
+python3 fix_stuck_notes.py &
+MONITOR_PID=$!
+echo "Stuck note monitor started with PID $MONITOR_PID"
+
 # Start the MIDI-OSC bridge on our new port
 echo "Starting MIDI-OSC bridge on port 9001..."
 echo "NOTE: Select your MIDI input device when prompted"
@@ -40,5 +56,12 @@ echo ""
 
 python3 midi_osc.py --port 9001
 
-echo "MIDI-OSC bridge exited."
+# When MIDI bridge exits, kill the monitor
+echo "MIDI-OSC bridge exited, cleaning up..."
+if kill -0 $MONITOR_PID 2>/dev/null; then
+    echo "Killing stuck note monitor (PID $MONITOR_PID)"
+    kill $MONITOR_PID
+fi
+
+echo "Clean shutdown complete."
 exit 0 
