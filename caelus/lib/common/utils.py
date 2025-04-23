@@ -1,21 +1,31 @@
 """
-Common utility functions for the OSC router system
+Common utility functions for the OSC router system.
+
+This module provides shared constants and utility functions used across the OSC router system.
 """
 import logging
+from typing import Final, Optional, Union
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-LOG = logging.getLogger(__name__)
+LOG: Final = logging.getLogger(__name__)
 
 # Default settings that can be used across modules
-DEFAULT_ROUTER_PORT = 9000
-DEFAULT_SYNTH_HOST = "127.0.0.1"
-DEFAULT_SYNTH_NAME = "simple"
+DEFAULT_ROUTER_PORT: Final[int] = 9000
+DEFAULT_SYNTH_HOST: Final[str] = "127.0.0.1"
+DEFAULT_SYNTH_NAME: Final[str] = "simple"
 
-def midi_to_freq(note, pitch_bend=0.0, bend_range=2.0):
-    """Convert MIDI note to frequency with pitch bend
-    pitch_bend should be in range -1.0 to 1.0 (typically from pitch wheel)
-    bend_range is the range in semitones (default ±2 semitones)
+def midi_to_freq(note: Union[int, float], pitch_bend: float = 0.0, bend_range: float = 2.0) -> float:
+    """
+    Convert MIDI note number to frequency in Hz with optional pitch bend.
+    
+    Args:
+        note: MIDI note number (0-127)
+        pitch_bend: Pitch bend value in range -1.0 to 1.0
+        bend_range: Pitch bend range in semitones (default: ±2 semitones)
+        
+    Returns:
+        Frequency in Hz
     """
     # Apply pitch bend (configurable range)
     note = note + (pitch_bend * bend_range)
