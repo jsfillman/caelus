@@ -21,15 +21,15 @@ Caelus maintains a clean and straightforward data flow:
     ┌─────────┐       ┌─────────┐       ┌─────────┐       ┌─────────┐
     │  MIDI   │       │  MIDI   │       │   OSC   │       │  Synth  │
     │ Device  │ MIDI  │   OSC   │  OSC  │ Router  │  OSC  │ Voices  │
-    │(Keyboard)│ ────► │ Bridge  │ ────► │(Caelus) │ ────► │(1,2,3,4)│
+    │(Keyboard)│ ────►│ Bridge  │ ────► │(Caelus) │ ────► │(1,2,3,4)│
     └─────────┘       └─────────┘       └─────┬───┘       └─────────┘
-                           ▲                  │
-                           │                  │ OSC
-                           │                  ▼
-                      ┌────┴────┐        ┌────────┐
-                      │   UI    │◄───────│TouchOSC│
-                      │Feedback │   OSC  │  or UI │
-                      └─────────┘        └────────┘
+                                            ▲ │
+                                            | │ OSC
+                                            | ▼
+                                         ┌────────┐
+                                         │TouchOSC│
+                                         │  &  UI │
+                                         └────────┘
 ```
 
 - **Bidirectional Communication**: UI components can both send commands to the router and receive status updates
