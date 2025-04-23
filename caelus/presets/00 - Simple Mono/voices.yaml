@@ -1,0 +1,15 @@
+# OSC Router Voice Configuration
+
+# Global settings
+settings:
+  synth_name: simple  # Name of the Faust synth
+  synth_host: 127.0.0.1  # Default host where Faust instances are running
+  default_cutoff: 1000
+  mod_wheel_range: 0.8
+  router_port: 9001  # Updated from default 9000 to avoid conflicts
+
+# Voice definitions
+voices:
+  - id: voice1
+    port: 5511
+    host: 127.0.0.1

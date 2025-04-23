@@ -1,0 +1,12 @@
+# Default patch for simple synth
+cutoff: 1000.0
+resonance: 0.5
+gain: 0.8
+attack: 0.01
+decay: 0.2
+sustain: 0.7
+release: 0.3
+# Explicitly set modulation and pitch bend parameters
+mod_depth: 0.8  # Depth of modulation effect (0-1)
+mod_to_cutoff: 1.0  # Modulation wheel to cutoff mapping (0-1)
+pitch_bend_range: 2.0  # Pitch bend range in semitones

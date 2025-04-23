@@ -1,0 +1,6 @@
+attack: 0.01
+cutoff: 1000
+decay: 0.2
+release: 0.5
+resonance: 0.5
+sustain: 0.7
