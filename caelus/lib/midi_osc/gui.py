@@ -1,17 +1,20 @@
 """
-GUI for the MIDI-OSC bridge
+GUI for the MIDI-OSC bridge.
+
+The visual control center for the Caelus system - where humans meet the machine.
 """
 import os
 import time
 import yaml
 import threading
+from typing import Dict, List, Optional, Any, Union, Callable, Tuple
 import subprocess
 import mido
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QFrame, QFileDialog, QMessageBox
 )
-from PyQt6.QtCore import QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import QTimer, pyqtSignal as Signal, QObject
 from pythonosc import udp_client
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
@@ -19,30 +22,49 @@ from pythonosc.osc_server import ThreadingOSCUDPServer
 from lib.common.utils import LOG
 from lib.midi_osc.midi_worker import MidiWorker
 from lib.midi_osc.helpers import (
-    kill_all_processes, set_light, monitor_process_output, 
+    kill_all_processes, monitor_process_output, 
     send_osc, active_processes
 )
 
 # Signal to allow OSC server to communicate with GUI
 class OSCSignalHandler(QObject):
-    status_updated = pyqtSignal(str, str)
-    param_changed = pyqtSignal(str, float)
+    """Handler for OSC signals that communicates with the GUI."""
+    status_updated = Signal(str, str)
+    param_changed = Signal(str, float)
+
+# Signal handler for thread-safe UI updates
+class UISignalHandler(QObject):
+    """Handler for thread-safe UI updates."""
+    midi_light_update = Signal(bool)
+    osc_light_update = Signal(bool)
+    status_update = Signal(str, str)  # color, text
 
 class OSCServerThread(threading.Thread):
-    """Thread to run OSC server in background"""
-    def __init__(self, signal_handler, listen_port=9002):
+    """
+    Thread to run OSC server in background.
+    
+    Listens for messages from the router and forwards them to the GUI.
+    """
+    def __init__(self, signal_handler: OSCSignalHandler, listen_port: int = 9002) -> None:
+        """
+        Initialize the OSC server thread.
+        
+        Args:
+            signal_handler: Handler to emit signals to the GUI
+            listen_port: Port to listen on for OSC messages
+        """
         super().__init__(daemon=True)
-        self.signal_handler = signal_handler
-        self.listen_port = listen_port
-        self.dispatcher = Dispatcher()
-        self.running = True
-        self.server = None
+        self.signal_handler: OSCSignalHandler = signal_handler
+        self.listen_port: int = listen_port
+        self.dispatcher: Dispatcher = Dispatcher()
+        self.running: bool = True
+        self.server: Optional[ThreadingOSCUDPServer] = None
         
         # Set up handlers
         self.setup_handlers()
         
-    def setup_handlers(self):
-        """Set up OSC message handlers"""
+    def setup_handlers(self) -> None:
+        """Set up OSC message handlers for different address patterns."""
         # Status message handler
         self.dispatcher.map("/ui/status", self.handle_status)
         
@@ -52,8 +74,14 @@ class OSCServerThread(threading.Thread):
         # Wildcard handler for debugging
         self.dispatcher.map("/*", self.handle_wildcard)
         
-    def handle_status(self, address, *args):
-        """Handle status messages from router"""
+    def handle_status(self, address: str, *args: Any) -> None:
+        """
+        Handle status messages from router.
+        
+        Args:
+            address: OSC address pattern
+            *args: OSC arguments (status_type, message)
+        """
         LOG.info(f"Received status OSC message: {address} {args}")
         if len(args) >= 2:
             status_type = str(args[0])
@@ -62,8 +90,14 @@ class OSCServerThread(threading.Thread):
             # Emit signal for GUI to update
             self.signal_handler.status_updated.emit(status_type, message)
             
-    def handle_param_update(self, address, *args):
-        """Handle parameter updates from router"""
+    def handle_param_update(self, address: str, *args: Any) -> None:
+        """
+        Handle parameter updates from router.
+        
+        Args:
+            address: OSC address pattern
+            *args: OSC arguments (param_name, value)
+        """
         LOG.info(f"Received param OSC message: {address} {args}")
         if len(args) >= 2:
             param_name = str(args[0])
@@ -72,21 +106,27 @@ class OSCServerThread(threading.Thread):
             # Emit signal for GUI to update
             self.signal_handler.param_changed.emit(param_name, value)
     
-    def handle_wildcard(self, address, *args):
-        """Debug handler for all OSC messages"""
+    def handle_wildcard(self, address: str, *args: Any) -> None:
+        """
+        Debug handler for all OSC messages.
+        
+        Args:
+            address: OSC address pattern
+            *args: OSC arguments
+        """
         LOG.info(f"Received wildcard OSC message: {address} {args}")
         if not address.startswith('/ui/'):
             LOG.debug(f"Received unhandled OSC: {address} {args}")
     
-    def run(self):
-        """Run the OSC server"""
+    def run(self) -> None:
+        """Run the OSC server in a separate thread."""
         try:
             self.server = ThreadingOSCUDPServer(("127.0.0.1", self.listen_port), self.dispatcher)
             LOG.info(f"OSC server listening on 127.0.0.1:{self.listen_port}")
             
             # Modified serve_forever loop that can be stopped
-            count = 0
-            last_log = time.time()
+            count: int = 0
+            last_log: float = time.time()
             while self.running:
                 # Handle any incoming message
                 self.server.handle_request()
@@ -102,8 +142,8 @@ class OSCServerThread(threading.Thread):
             import traceback
             traceback.print_exc()
     
-    def stop(self):
-        """Stop the OSC server"""
+    def stop(self) -> None:
+        """Stop the OSC server thread."""
         self.running = False
         if self.server:
             # Close the socket
@@ -111,23 +151,58 @@ class OSCServerThread(threading.Thread):
         LOG.info("OSC server stopped")
 
 class MidiOscGui(QWidget):
-    """Main GUI for the MIDI-OSC bridge"""
-    def __init__(self, osc_ip="127.0.0.1", osc_port=9001, router_name="router", presets_dir="presets", ui_osc_port=9002):
+    """
+    Main GUI for the MIDI-OSC bridge.
+    
+    Provides the user interface for selecting MIDI devices,
+    managing synth banks, and controlling the router.
+    """
+    def __init__(
+        self, 
+        osc_ip: str = "127.0.0.1", 
+        osc_port: int = 9001, 
+        router_name: str = "router", 
+        presets_dir: str = "presets", 
+        ui_osc_port: int = 9002
+    ) -> None:
+        """
+        Initialize the MIDI-OSC bridge GUI.
+        
+        Args:
+            osc_ip: IP address of the OSC router
+            osc_port: Port of the OSC router
+            router_name: Name of the OSC router
+            presets_dir: Directory containing synth presets
+            ui_osc_port: Port to listen on for UI feedback
+        """
         super().__init__()
-        self.osc_ip = osc_ip
-        self.osc_port = osc_port
-        self.router_name = router_name
-        self.presets_dir = presets_dir
-        self.ui_osc_port = ui_osc_port
+        self.osc_ip: str = osc_ip
+        self.osc_port: int = osc_port
+        self.router_name: str = router_name
+        self.presets_dir: str = presets_dir
+        self.ui_osc_port: int = ui_osc_port
+        
+        # MIDI worker and process tracking
+        self.midi_worker: Optional[MidiWorker] = None
+        self.synth_processes: List[subprocess.Popen] = []
+        self.midi_in_port: Optional[str] = None
+        self.current_bank: Optional[str] = None
+        self.light_timer: Optional[QTimer] = None
+        
+        # Set up UI signal handler for thread-safe updates
+        self.ui_signal_handler = UISignalHandler()
+        self.ui_signal_handler.midi_light_update.connect(self.update_midi_light)
+        self.ui_signal_handler.osc_light_update.connect(self.update_osc_light)
+        self.ui_signal_handler.status_update.connect(self.update_status_direct)
         
         # Create OSC client
-        self.osc = udp_client.SimpleUDPClient(self.osc_ip, self.osc_port)
+        self.osc_client: udp_client.SimpleUDPClient = udp_client.SimpleUDPClient(self.osc_ip, self.osc_port)
         
         # Set up OSC server for UI feedback
-        self.osc_signal_handler = OSCSignalHandler()
+        self.osc_signal_handler: OSCSignalHandler = OSCSignalHandler()
         self.osc_signal_handler.status_updated.connect(self.update_status)
         self.osc_signal_handler.param_changed.connect(self.update_parameter)
-        self.osc_server = OSCServerThread(self.osc_signal_handler, listen_port=self.ui_osc_port)
+        self.osc_server: OSCServerThread = OSCServerThread(self.osc_signal_handler, listen_port=self.ui_osc_port)
         self.osc_server.start()
         
         self.setWindowTitle("Caelus MIDI↔OSC Bridge")
@@ -179,7 +254,7 @@ class MidiOscGui(QWidget):
                 border-radius: 15px;
                 border: 2px solid #FFA500;
             """)
-            set_light(light, False)
+            # Initialize lights as off (already done by styleSheet above)
 
         light_row.addWidget(QLabel("MIDI IN"))
         light_row.addWidget(self.midi_light)
@@ -229,8 +304,14 @@ class MidiOscGui(QWidget):
         self.port_refresh_timer.timeout.connect(self.update_midi_ports)
         self.port_refresh_timer.start(3000)
 
-    def update_status(self, status_type, message):
-        """Update status display with info from router"""
+    def update_status(self, status_type: str, message: str) -> None:
+        """
+        Update status display with info from router.
+        
+        Args:
+            status_type: Type of status message (info, warning, error, note)
+            message: Status message content
+        """
         # Different colors for different status types
         color = "#FFFFFF"  # Default white
         if status_type == "info":
@@ -245,8 +326,14 @@ class MidiOscGui(QWidget):
         self.status_label.setText(message)
         self.status_label.setStyleSheet(f"color: {color}; font-size: 14px;")
     
-    def update_parameter(self, param_name, value):
-        """Update UI elements based on parameter changes from router"""
+    def update_parameter(self, param_name: str, value: float) -> None:
+        """
+        Update UI elements based on parameter changes from router.
+        
+        Args:
+            param_name: Name of the parameter that changed
+            value: New parameter value
+        """
         # Example implementation - could update sliders, knobs, or other controls
         LOG.info(f"UI received parameter update: {param_name} = {value}")
         
@@ -269,7 +356,8 @@ class MidiOscGui(QWidget):
             
         # Will expand this as we add more UI controls
 
-    def refresh_midi_ports(self):
+    def refresh_midi_ports(self) -> None:
+        """Refresh the list of available MIDI input ports."""
         self.midi_dropdown.clear()
         try:
             ports = mido.get_input_names()
@@ -298,7 +386,8 @@ class MidiOscGui(QWidget):
             import traceback
             traceback.print_exc()
 
-    def refresh_bank_list(self):
+    def refresh_bank_list(self) -> None:
+        """Refresh the list of available synth banks from the presets directory."""
         self.bank_dropdown.clear()
         try:
             # Add empty selection at the beginning
@@ -312,7 +401,8 @@ class MidiOscGui(QWidget):
         except Exception as e:
             LOG.error(f"Error loading banks: {e}")
 
-    def update_midi_ports(self):
+    def update_midi_ports(self) -> None:
+        """Periodically update the list of MIDI ports if they've changed."""
         current_ports = [self.midi_dropdown.itemText(i) for i in range(self.midi_dropdown.count())]
         available_ports = mido.get_input_names()
         if current_ports != available_ports:
@@ -324,10 +414,16 @@ class MidiOscGui(QWidget):
                 self.midi_dropdown.setCurrentText(selected)
             self.midi_dropdown.blockSignals(False)
 
-    def midi_port_changed(self, index):
-        if self.worker:
-            self.worker.stop()
-            self.worker = None
+    def midi_port_changed(self, index: int) -> None:
+        """
+        Handle when the user selects a different MIDI port.
+        
+        Args:
+            index: Index of the selected MIDI port in the dropdown
+        """
+        if self.midi_worker:
+            self.midi_worker.stop()
+            self.midi_worker = None
             LOG.info("Stopped existing MIDI worker")
         
         if index < 0:
@@ -349,24 +445,57 @@ class MidiOscGui(QWidget):
             LOG.info("MIDI port test successful")
             
             # Create the worker
-            self.worker = MidiWorker(port_name, self.handle_midi)
-            self.worker.start()
+            self.midi_worker = MidiWorker(port_name, self.handle_midi)
+            self.midi_worker.start()
             LOG.info(f"Started MIDI worker for port: {port_name}")
         except Exception as e:
             LOG.error(f"ERROR connecting to MIDI port: {e}")
             QMessageBox.warning(self, "MIDI Error", f"Failed to connect to MIDI port: {str(e)}")
-            self.worker = None
+            self.midi_worker = None
 
-    def bank_changed(self, index):
+    def bank_changed(self, index: int) -> None:
+        """
+        Handle when the user selects a different synth bank.
+        
+        Args:
+            index: Index of the selected bank in the dropdown
+        """
         if index <= 0:  # Skip the "-- Select Synth --" entry
             self.update_button_state(False)
             return
-        
-        bank_name = self.bank_dropdown.currentText()
-        self.load_synth_bank(bank_name)
 
-    def load_synth_bank(self, bank_name):
+        bank_name = self.bank_dropdown.currentText()
+        LOG.info(f"Selected bank: {bank_name}")
+        
+        self.current_bank = bank_name
+        self.update_button_state(True)
+        
+        # Ask user if they want to load the bank
+        response = QMessageBox.question(
+            self,
+            "Load Bank",
+            f"Do you want to load the bank '{bank_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if response == QMessageBox.StandardButton.Yes:
+            LOG.info(f"Auto-loading bank: {bank_name}")
+            self.load_bank()  # Use load_bank instead of load_synth_bank directly
+
+    def load_synth_bank(self, bank_name: str) -> bool:
+        """
+        Load a synth bank, starting the router and synth instances.
+        
+        Args:
+            bank_name: Name of the bank to load
+            
+        Returns:
+            True if bank was loaded successfully, False otherwise
+        """
         try:
+            LOG.info(f"Starting to load synth bank: {bank_name}")
+            
             # Stop any existing synths
             kill_all_processes()
             
@@ -376,25 +505,80 @@ class MidiOscGui(QWidget):
             
             # Validate bank directory
             if not os.path.exists(bank_dir):
-                raise FileNotFoundError(f"Bank directory {bank_dir} does not exist")
+                error_msg = f"Bank directory {bank_dir} does not exist"
+                LOG.error(error_msg)
+                raise FileNotFoundError(error_msg)
             
             # Check for required files
             voices_file = os.path.join(bank_dir, "voices.yaml")
             if not os.path.exists(voices_file):
-                raise FileNotFoundError(f"Missing voices.yaml in {bank_dir}")
+                error_msg = f"Missing voices.yaml in {bank_dir}"
+                LOG.error(error_msg)
+                raise FileNotFoundError(error_msg)
                 
             synth_file = os.path.join(bank_dir, "synth")
             if not os.path.exists(synth_file):
-                raise FileNotFoundError(f"Missing synth binary/script in {bank_dir}")
+                error_msg = f"Missing synth binary/script in {bank_dir}"
+                LOG.error(error_msg)
+                raise FileNotFoundError(error_msg)
             
             # Make synth file executable
+            LOG.info(f"Making synth file executable: {synth_file}")
             os.chmod(synth_file, 0o755)
             
             # Tell the router where to send UI updates
             ui_osc_host = self.osc_ip
             ui_osc_port = self.ui_osc_port
             
-            # Launch OSC router with UI feedback address
+            # Read voices config to get ports for synth instances
+            with open(voices_file, 'r') as f:
+                config = yaml.safe_load(f)
+                LOG.info(f"Loaded voices config: {config}")
+            
+            # Get default host from settings
+            default_host = "127.0.0.1"
+            if 'settings' in config and 'synth_host' in config['settings']:
+                default_host = config['settings']['synth_host']
+            
+            # Step 1: Process remote synth connections first
+            # This helps identify network issues before starting the router
+            LOG.info("Checking remote synth connections...")
+            remote_voice_count = 0
+            remote_voices_status = {}
+            
+            import socket
+            for voice in config.get('voices', []):
+                host = voice.get('host', default_host)
+                port = voice.get('port')
+                voice_id = voice.get('id', f"voice_{port}")
+                
+                if host not in ("127.0.0.1", "localhost"):
+                    # Test connection to remote synth
+                    LOG.info(f"Testing connection to remote synth at {host}:{port}")
+                    try:
+                        # Simple socket test to see if port is open
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(2)  # 2 second timeout
+                        result = sock.connect_ex((host, port))
+                        sock.close()
+                        
+                        if result == 0:
+                            LOG.info(f"Connection to remote synth at {host}:{port} successful")
+                            remote_voice_count += 1
+                            remote_voices_status[voice_id] = "connected"
+                        else:
+                            LOG.warning(f"Connection to remote synth at {host}:{port} failed (port not open)")
+                            remote_voices_status[voice_id] = "failed"
+                    except Exception as e:
+                        LOG.error(f"Error testing connection to remote synth at {host}:{port}: {e}")
+                        remote_voices_status[voice_id] = "error"
+            
+            if remote_voice_count > 0:
+                LOG.info(f"Successfully connected to {remote_voice_count} remote synth instances")
+            else:
+                LOG.info("No remote synths configured or connected")
+                
+            # Step 2: Launch OSC router with UI feedback address
             LOG.info(f"Starting OSC router with config: {voices_file}")
             router_cmd = [
                 "python3", "osc_router.py",
@@ -440,52 +624,44 @@ class MidiOscGui(QWidget):
             # Test OSC communication
             LOG.info("Testing OSC communication with router...")
             try:
-                send_osc(self.osc, f"/{self.router_name}/all_notes_off", [])
+                send_osc(self.osc_client, f"/{self.router_name}/all_notes_off", [])
                 LOG.info("OSC test successful!")
             except Exception as e:
                 LOG.warning(f"WARNING: OSC test failed: {e}")
             
-            # Read voices config to get ports for synth instances
-            with open(voices_file, 'r') as f:
-                config = yaml.safe_load(f)
-                LOG.info(f"Loaded voices config: {config}")
-            
-            # Get default host from settings
-            default_host = "127.0.0.1"
-            if 'settings' in config and 'synth_host' in config['settings']:
-                default_host = config['settings']['synth_host']
-            
-            # Launch synth instances for local hosts
-            LOG.info(f"Launching synth instances from: {synth_file}")
-            voice_count = 0
+            # Step 3: Launch local synth instances
+            LOG.info(f"Launching local synth instances from: {synth_file}")
+            local_voice_count = 0
             for voice in config.get('voices', []):
                 host = voice.get('host', default_host)
                 port = voice.get('port')
+                voice_id = voice.get('id', f"voice_{port}")
                 
                 if host in ("127.0.0.1", "localhost"):
                     # Launch local synth
                     synth_cmd = [synth_file, "-port", str(port)]
-                    LOG.info(f"Starting voice: {voice.get('id')} on port {port}: {' '.join(synth_cmd)}")
+                    LOG.info(f"Starting voice: {voice_id} on port {port}: {' '.join(synth_cmd)}")
                     synth_proc = subprocess.Popen(
                         synth_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE
                     )
                     active_processes.append(synth_proc)
-                    voice_count += 1
+                    local_voice_count += 1
                     time.sleep(0.5)  # Give each synth time to initialize
             
-            LOG.info(f"Started {voice_count} synth instances")
+            LOG.info(f"Started {local_voice_count} local synth instances")
+            LOG.info(f"Total voices available: {local_voice_count + remote_voice_count}")
             
             # Register with router as UI client
             LOG.info(f"Registering UI client with router: {ui_osc_host}:{ui_osc_port}")
-            register_result = send_osc(self.osc, f"/{self.router_name}/register_ui", [ui_osc_host, ui_osc_port])
+            register_result = send_osc(self.osc_client, f"/{self.router_name}/register_ui", [ui_osc_host, ui_osc_port])
             if register_result:
                 LOG.info("Successfully registered UI with router")
             else:
                 LOG.error("Failed to register UI with router")
             
-            # Start UI
+            # Step 4: Start UI if available
             ui_path = os.path.join(bank_dir, "ui.py")
             if os.path.exists(ui_path):
                 LOG.info(f"Starting UI: {ui_path}")
@@ -511,7 +687,13 @@ class MidiOscGui(QWidget):
             # Enable buttons
             self.update_button_state(True)
             
+            # Display status message
+            status_msg = f"Bank '{bank_name}' loaded with {local_voice_count} local and {remote_voice_count} remote synths"
+            self.status_label.setText(status_msg)
+            self.status_label.setStyleSheet("color: #00FF00; font-size: 14px;")
+            
             LOG.info(f"Successfully loaded bank: {bank_name}")
+            return True
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load bank: {str(e)}")
@@ -519,14 +701,30 @@ class MidiOscGui(QWidget):
             import traceback
             traceback.print_exc()
             self.update_button_state(False)
+            return False
 
-    def update_button_state(self, enabled):
+    def update_button_state(self, enabled: bool) -> None:
+        """
+        Update the enabled state of UI buttons.
+        
+        Args:
+            enabled: Whether buttons should be enabled
+        """
         self.load_patch_btn.setEnabled(enabled)
         self.save_patch_btn.setEnabled(enabled)
         # Always enable panic button
         self.panic_btn.setEnabled(True)
         
-    def load_patch_file(self, patch_file):
+    def load_patch_file(self, patch_file: str) -> bool:
+        """
+        Load a patch file and apply it to the current synth.
+        
+        Args:
+            patch_file: Path to the patch file to load
+            
+        Returns:
+            True if patch was loaded successfully, False otherwise
+        """
         try:
             if not os.path.exists(patch_file):
                 raise FileNotFoundError(f"Patch file {patch_file} not found")
@@ -535,197 +733,271 @@ class MidiOscGui(QWidget):
             with open(patch_file, 'r') as f:
                 patch_data = yaml.safe_load(f)
             
-            # Send patch parameters to synth via OSC
-            if isinstance(patch_data, dict):
-                LOG.info(f"Sending {len(patch_data)} parameters:")
-                for param, value in patch_data.items():
-                    # Send to all synth instances
-                    # Note: The param_all endpoint expects [param_name, value] format
-                    osc_address = f"/{self.router_name}/param_all"
-                    LOG.info(f"  {param}: {value} -> {osc_address}")
-                    send_osc(self.osc, osc_address, [param, value])
+            # Store current patch
+            self.current_patch = patch_file
+            
+            # Apply patch to synth
+            if not isinstance(patch_data, dict):
+                raise ValueError(f"Invalid patch format in {patch_file}")
+                
+            LOG.info(f"Applying patch parameters: {patch_data}")
+            
+            # Send parameters to synth
+            for param_name, value in patch_data.items():
+                # Skip metadata sections
+                if param_name.startswith('_'):
+                    continue
                     
-            self.current_patch = os.path.basename(patch_file)
-            LOG.info(f"Loaded patch: {self.current_patch}")
+                LOG.info(f"Setting parameter: {param_name} = {value}")
+                send_osc(self.osc_client, f"/{self.router_name}/param", [param_name, float(value)])
+                time.sleep(0.01)  # Small delay to avoid flooding
+            
+            # Extract patch name for status display
+            patch_name = os.path.basename(patch_file).replace('.yaml', '')
+            metadata = patch_data.get('_metadata', {})
+            if isinstance(metadata, dict) and 'name' in metadata:
+                patch_name = metadata['name']
+                
+            LOG.info(f"Loaded patch: {patch_name}")
+            self.status_label.setText(f"Loaded patch: {patch_name}")
+            self.status_label.setStyleSheet("color: #00FF00; font-size: 14px;")
+            
+            return True
             
         except Exception as e:
-            QMessageBox.warning(self, "Load Error", f"Failed to load patch: {str(e)}")
-            LOG.error(f"ERROR loading patch: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-    def load_patch(self):
+            LOG.error(f"Error loading patch: {e}")
+            self.status_label.setText(f"Error loading patch: {str(e)}")
+            self.status_label.setStyleSheet("color: #FF0000; font-size: 14px;")
+            return False
+    
+    def load_patch(self) -> None:
+        """Open file dialog to select and load a patch file."""
         if not self.current_bank:
+            QMessageBox.warning(self, "Warning", "Please select a bank first")
             return
             
-        patches_dir = os.path.join(self.presets_dir, self.current_bank, "patches")
-        if not os.path.exists(patches_dir):
-            QMessageBox.warning(self, "Error", f"Patches directory not found: {patches_dir}")
-            return
-            
-        file_dialog = QFileDialog(self)
-        file_dialog.setDirectory(patches_dir)
-        file_dialog.setNameFilter("YAML files (*.yaml)")
-        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-        
-        if file_dialog.exec():
-            selected_files = file_dialog.selectedFiles()
-            if selected_files:
-                self.load_patch_file(selected_files[0])
-
-    def save_patch(self):
-        if not self.current_bank:
-            return
-        
-        # Request all current parameters from the router
-        # This is a simplification - in real implementation you'd need to
-        # query the actual parameters from the synth
-        
-        # For demo purposes, create sample patch data
-        patch_data = {
-            "cutoff": 1000,
-            "resonance": 0.5,
-            "attack": 0.01,
-            "decay": 0.2,
-            "sustain": 0.7,
-            "release": 0.5
-        }
-        
         patches_dir = os.path.join(self.presets_dir, self.current_bank, "patches")
         if not os.path.exists(patches_dir):
             os.makedirs(patches_dir)
             
-        file_dialog = QFileDialog(self)
-        file_dialog.setDirectory(patches_dir)
-        file_dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        file_dialog.setNameFilter("YAML files (*.yaml)")
-        file_dialog.setDefaultSuffix("yaml")
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load Patch", patches_dir, "YAML Files (*.yaml *.yml)"
+        )
         
-        if file_dialog.exec():
-            selected_file = file_dialog.selectedFiles()[0]
-            if selected_file:
-                try:
-                    with open(selected_file, 'w') as f:
-                        yaml.dump(patch_data, f, default_flow_style=False)
-                    self.current_patch = os.path.basename(selected_file)
-                    LOG.info(f"Saved patch: {self.current_patch}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Save Error", f"Failed to save patch: {str(e)}")
-
-    def load_bank(self):
-        self.bank_dropdown.showPopup()
-
-    def handle_midi(self, msg):
-        LOG.info(f"MIDI: {msg}")
-        self.midi_recent = True
-        address = f"/{self.router_name}/unknown"
-        val = 0.0
-        if msg.type == 'note_on':
-            # Note: Some MIDI controllers send note-on with velocity 0 instead of note-off
-            if msg.velocity == 0:
-                # This is actually a note-off
-                address = f"/{self.router_name}/note_off"
-                val = [msg.note]
-            else:
-                address = f"/{self.router_name}/note_on"
-                val = [msg.note, msg.velocity / 127.0]
-                LOG.info(f"Sending note_on to router: note={msg.note}, velocity={msg.velocity/127.0}")
-        elif msg.type == 'note_off':
-            address = f"/{self.router_name}/note_off"
-            val = [msg.note]
-            LOG.info(f"Sending note_off to router: note={msg.note}")
-        elif msg.type == 'control_change':
-            address = f"/{self.router_name}/cc"
-            val = [msg.control, msg.value / 127.0]
-            LOG.info(f"Sending CC to router: cc={msg.control}, value={msg.value/127.0}")
+        if filename:
+            self.load_patch_file(filename)
+    
+    def save_patch(self) -> None:
+        """Save current synth state to a patch file."""
+        if not self.current_bank:
+            QMessageBox.warning(self, "Warning", "Please select a bank first")
+            return
             
-            # Handle sustain pedal (CC64) specially for debugging
-            if msg.control == 64:
-                sustain_on = msg.value >= 64
-                LOG.info(f"Sustain pedal {'ON' if sustain_on else 'OFF'} - value: {msg.value}")
-                
-        elif msg.type == 'polytouch':
-            address = f"/{self.router_name}/poly_aftertouch"
-            val = [msg.note, msg.value / 127.0]
-        elif msg.type == 'pitchwheel':
-            address = f"/{self.router_name}/pitch_bend"
-            # Pitchwheel range is -8192 to 8191, normalize to -1.0 to 1.0
-            val = [msg.pitch / 8192.0]
+        patches_dir = os.path.join(self.presets_dir, self.current_bank, "patches")
+        if not os.path.exists(patches_dir):
+            os.makedirs(patches_dir)
+            
+        # Let user choose filename
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Patch", patches_dir, "YAML Files (*.yaml)"
+        )
         
-        if send_osc(self.osc, address, val):
-            self.osc_recent = True
-            LOG.info(f"Successfully sent OSC message: {address} {val}")
+        if not filename:
+            return
+            
+        if not filename.endswith('.yaml'):
+            filename += '.yaml'
+            
+        # For now, create a simple patch template
+        # In a real implementation, you'd query the synth for current parameter values
+        patch_data = {
+            "_metadata": {
+                "name": os.path.basename(filename).replace('.yaml', ''),
+                "author": "Caelus User",
+                "description": "Saved patch",
+                "created": time.strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "cutoff": 1000.0,
+            "resonance": 0.5,
+            "attack": 0.01,
+            "decay": 0.1,
+            "sustain": 0.7,
+            "release": 0.5,
+            "gain": 0.8
+        }
+        
+        try:
+            with open(filename, 'w') as f:
+                yaml.dump(patch_data, f, default_flow_style=False)
+                
+            LOG.info(f"Saved patch to {filename}")
+            self.status_label.setText(f"Saved patch: {os.path.basename(filename)}")
+            self.status_label.setStyleSheet("color: #00FF00; font-size: 14px;")
+            
+        except Exception as e:
+            LOG.error(f"Error saving patch: {e}")
+            self.status_label.setText(f"Error saving patch: {str(e)}")
+            self.status_label.setStyleSheet("color: #FF0000; font-size: 14px;")
+    
+    def load_bank(self) -> None:
+        """Load the currently selected synth bank."""
+        bank_name = self.bank_dropdown.currentText()
+        if bank_name and bank_name != "-- Select Synth --":
+            LOG.info(f"Initiating load of bank: {bank_name}")
+            result = self.load_synth_bank(bank_name)
+            LOG.info(f"Bank loading {'succeeded' if result else 'failed'}: {bank_name}")
         else:
-            LOG.error(f"Failed to send OSC message: {address} {val}")
-
-    def dim_lights(self):
-        set_light(self.midi_light, self.midi_recent)
-        set_light(self.osc_light, self.osc_recent)
+            LOG.warning("No valid bank selected - please select a bank first")
+            QMessageBox.warning(self, "Bank Error", "Please select a synth bank first")
+    
+    def handle_midi(self, msg: mido.Message) -> None:
+        """
+        Handle incoming MIDI messages.
+        
+        Args:
+            msg: MIDI message to process
+        """
+        try:
+            # Signal UI thread to update MIDI light instead of direct update
+            self.ui_signal_handler.midi_light_update.emit(True)
+            
+            # Skip messages we don't care about
+            if msg.type not in ['note_on', 'note_off', 'control_change', 'pitchwheel', 'aftertouch', 'polytouch']:
+                return
+                
+            LOG.debug(f"MIDI: {msg}")
+            
+            # Convert MIDI message to OSC
+            if msg.type == 'note_on':
+                if msg.velocity == 0:
+                    # Note-on with velocity 0 is same as note-off
+                    send_osc(self.osc_client, f"/{self.router_name}/note_off", [msg.note])
+                else:
+                    # Normalize velocity to 0-1 range
+                    velocity = msg.velocity / 127.0
+                    send_osc(self.osc_client, f"/{self.router_name}/note_on", [msg.note, velocity])
+                    
+            elif msg.type == 'note_off':
+                send_osc(self.osc_client, f"/{self.router_name}/note_off", [msg.note])
+                
+            elif msg.type == 'control_change':
+                # If CC 64 (sustain), handle specially
+                if msg.control == 64:
+                    send_osc(self.osc_client, f"/{self.router_name}/sustain", [msg.value])
+                else:
+                    send_osc(self.osc_client, f"/{self.router_name}/cc", [msg.control, msg.value])
+                
+            elif msg.type == 'pitchwheel':
+                # Normalize to -1 to 1 range
+                pitch_bend = msg.pitch / 8192.0
+                send_osc(self.osc_client, f"/{self.router_name}/pitch_bend", [pitch_bend])
+                
+            elif msg.type == 'aftertouch':
+                # Normalize to 0-1 range
+                pressure = msg.value / 127.0
+                send_osc(self.osc_client, f"/{self.router_name}/aftertouch", [pressure])
+                
+            elif msg.type == 'polytouch':
+                # Normalize to 0-1 range
+                pressure = msg.value / 127.0
+                send_osc(self.osc_client, f"/{self.router_name}/poly_aftertouch", [msg.note, pressure])
+            
+            # Signal UI thread to update OSC light
+            self.ui_signal_handler.osc_light_update.emit(True)
+                
+        except Exception as e:
+            LOG.error(f"Error handling MIDI message: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def dim_lights(self) -> None:
+        """Turn off activity lights after a short delay."""
+        if not self.midi_recent:
+            self.update_midi_light(False)
+        if not self.osc_recent:
+            self.update_osc_light(False)
         self.midi_recent = False
         self.osc_recent = False
-
-    def closeEvent(self, event):
-        """Clean up when window is closed"""
-        LOG.info("Shutting down MIDI-OSC bridge...")
+    
+    def closeEvent(self, event) -> None:
+        """
+        Handle window close event.
         
-        # Stop MIDI worker
-        if self.worker:
-            LOG.info("Stopping MIDI worker...")
-            self.worker.stop()
+        Args:
+            event: Close event
+        """
+        LOG.info("Closing MIDI-OSC bridge")
         
         # Stop OSC server
         if self.osc_server:
-            LOG.info("Stopping OSC server...")
+            LOG.info("Stopping OSC server")
             self.osc_server.stop()
         
-        # Kill all child processes
-        LOG.info(f"Terminating {len(active_processes)} child processes...")
-        for proc in active_processes[:]:  # Create a copy of the list to avoid modification during iteration
-            try:
-                LOG.info(f"Terminating process {proc.pid}...")
-                proc.terminate()
-                proc.wait(timeout=1.0)  # Wait up to 1 second for clean termination
-            except Exception as e:
-                LOG.error(f"Error terminating process: {e}")
-                # Force kill if terminate doesn't work
-                try:
-                    import signal
-                    import os
-                    os.kill(proc.pid, signal.SIGKILL)
-                    LOG.info(f"Force killed process {proc.pid}")
-                except Exception as e2:
-                    LOG.error(f"Error force killing process: {e2}")
+        # Stop MIDI worker
+        if self.midi_worker:
+            LOG.info("Stopping MIDI worker")
+            self.midi_worker.stop()
         
-        # Call the general kill function as backup
+        # Kill all child processes
+        LOG.info("Stopping all child processes")
         kill_all_processes()
         
-        # Clear the process list
-        active_processes.clear()
-        
-        LOG.info("Shutdown complete")
+        # Accept the close event
         event.accept()
+    
+    def panic(self) -> None:
+        """
+        Send emergency all notes off message to the router.
+        
+        This is the "panic button" to clear any stuck notes.
+        """
+        LOG.info("PANIC - sending all notes off")
+        try:
+            send_osc(self.osc_client, f"/{self.router_name}/all_notes_off", [])
+            self.status_label.setText("All notes off - PANIC button pressed")
+            self.status_label.setStyleSheet("color: #FF0000; font-size: 14px;")
+        except Exception as e:
+            LOG.error(f"Error sending panic message: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            self.status_label.setStyleSheet("color: #FF0000; font-size: 14px;")
 
-    def panic(self):
-        """Emergency function to clear all stuck notes and reset synths"""
-        LOG.info("PANIC button pressed - clearing all notes")
+    def update_midi_light(self, on: bool) -> None:
+        """
+        Update the MIDI activity light in a thread-safe way.
         
-        # Send all notes off message
-        send_osc(self.osc, f"/{self.router_name}/all_notes_off", [])
+        Args:
+            on: Whether the light should be on or off
+        """
+        color = "#FFA500" if on else "#333"
+        self.midi_light.setStyleSheet(f"""
+            background-color: {color};
+            border-radius: 15px;
+            border: 2px solid #FFA500;
+        """)
+        self.midi_recent = on
         
-        # Also send direct note-offs for all possible notes (0-127)
-        for note in range(128):
-            send_osc(self.osc, f"/{self.router_name}/note_off", [note])
+    def update_osc_light(self, on: bool) -> None:
+        """
+        Update the OSC activity light in a thread-safe way.
         
-        # Set sustain pedal off
-        send_osc(self.osc, f"/{self.router_name}/cc", [64, 0.0])
+        Args:
+            on: Whether the light should be on or off
+        """
+        color = "#FFA500" if on else "#333"
+        self.osc_light.setStyleSheet(f"""
+            background-color: {color};
+            border-radius: 15px;
+            border: 2px solid #FFA500;
+        """)
+        self.osc_recent = on
         
-        # Reset all voices
-        for voice_idx in range(16):  # Assuming max 16 voices
-            send_osc(self.osc, f"/{self.router_name}/voice/reset", voice_idx)
+    def update_status_direct(self, color: str, message: str) -> None:
+        """
+        Update the status label directly with the specified color and message.
         
-        # Update GUI state
-        self.midi_recent = False
-        self.osc_recent = False
-        self.dim_lights()
-        
-        QMessageBox.information(self, "Panic", "All notes have been cleared and voices reset.") 
+        Args:
+            color: CSS color string
+            message: Status message to display
+        """
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {color}; font-size: 14px;") 

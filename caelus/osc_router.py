@@ -2,8 +2,9 @@
 """
 OSC Synth Router - Polyphonic voice allocator for OSC-controlled synths.
 
-This script serves as the entry point for the OSC router system, which manages
-polyphonic voice allocation for synthesizers controlled via OSC.
+The traffic cop of the MIDI highway - routes notes to the right synth instances
+at the right time, preventing 10-car pileups and ensuring your performance 
+doesn't sound like a cat walking across a piano.
 """
 import argparse
 import sys
@@ -16,6 +17,9 @@ from lib.osc_bridge.router import OSCRouter
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments.
+    
+    Translates human intentions into machine-readable instructions.
+    Command line args: the OG user interface since 1970.
     
     Returns:
         Parsed command line arguments
@@ -58,6 +62,9 @@ def main() -> int:
     """
     Main entry point for the OSC router.
     
+    Where the magic happens - connects the dots between MIDI input,
+    voice allocation, and your ears' pleasure centers.
+    
     Returns:
         Exit code (0 for success, non-zero for error)
     """
@@ -65,7 +72,7 @@ def main() -> int:
     args = parse_args()
     
     try:
-        # Create the router
+        # Create the router - our traffic controller for the MIDI highway
         router = OSCRouter(
             config_file=args.config, 
             router_port=args.port, 
@@ -82,12 +89,12 @@ def main() -> int:
             )
             LOG.info(f"Created {num_voices} default voices starting at port {args.start_port}")
         
-        # Run the router
+        # Run the router - engage warp drive!
         router.run()
         return 0
     
     except KeyboardInterrupt:
-        LOG.info("Router stopped by user")
+        LOG.info("Router stopped by user - they must have better things to do")
         return 0
     except Exception as e:
         LOG.error(f"Error running router: {e}")

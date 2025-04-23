@@ -3,7 +3,7 @@ OSC Router Module - Handles OSC message routing to synth voices.
 
 This module provides classes for routing OSC messages to multiple synth voices:
 - ConfigLoader: Handles loading configuration from files
-- UIBridge: Manages communication with UI clients
+- UIBridge: Manages bidirectional UI communication
 - VariableManager: Handles getting/setting router variables
 - OSCRouter: Main router class that ties everything together
 """
@@ -80,18 +80,33 @@ class ConfigLoader:
 
 class UIBridge:
     """
-    Handles communication with UI clients via OSC.
+    Manages bidirectional communication with UI clients via OSC.
+    
+    This class handles both:
+    1. Sending updates TO UIs (outbound: params, status, etc.)
+    2. Receiving commands FROM UIs (inbound: UI registration)
+    
+    It's like a digital switchboard connecting the router and UI,
+    ensuring they're always on speaking terms.
     """
     
     def __init__(self) -> None:
-        """Initialize the UI bridge."""
+        """Initialize the bidirectional UI bridge."""
+        # Outbound communication details (router → UI)
         self.ui_host: Optional[str] = None
         self.ui_port: Optional[int] = None
         self.ui_client: Optional[udp_client.SimpleUDPClient] = None
+        
+        # Inbound handlers are registered in the main OSCRouter class
+        # with the dispatcher.map() method
     
     def setup_client(self, host: str, port: int) -> bool:
         """
-        Set up OSC client for sending messages to the UI.
+        Set up OSC client for sending messages TO the UI.
+        
+        This establishes the outbound channel from router to UI.
+        For inbound messages (UI → router), see handle_register_ui()
+        in the OSCRouter class.
         
         Args:
             host: UI host address
@@ -115,7 +130,7 @@ class UIBridge:
     
     def send_status(self, status_type: str, message: str) -> bool:
         """
-        Send status message to UI.
+        Send status message TO UI (outbound).
         
         Args:
             status_type: Type of status (info, warning, error)
@@ -135,7 +150,7 @@ class UIBridge:
     
     def send_param(self, param_name: str, value: Any) -> bool:
         """
-        Send parameter update to UI.
+        Send parameter update TO UI (outbound).
         
         Args:
             param_name: Parameter name
@@ -288,8 +303,13 @@ class OSCRouter:
     """
     Routes OSC messages to multiple synth voice instances.
     
-    This class handles incoming OSC messages and routes them to the appropriate
-    synth voices based on voice allocation and other rules.
+    This class handles both:
+    1. INBOUND: Receiving OSC messages from MIDI bridge and UIs
+    2. OUTBOUND: Sending OSC messages to synth voices and UIs
+    
+    It's the Grand Central Station of your MIDI/OSC ecosystem -
+    connections in all directions, with trains constantly arriving
+    and departing on schedule.
     """
     
     def __init__(
@@ -311,10 +331,10 @@ class OSCRouter:
         # Store the router port
         self.router_port: int = router_port
         
-        # UI communication client
+        # UI communication client - handles bidirectional UI comms
         self.ui_bridge: UIBridge = UIBridge()
         
-        # Setup UI client if host and port provided
+        # Setup UI client if host and port provided (outbound channel)
         if ui_host and ui_port:
             self.ui_bridge.setup_client(ui_host, ui_port)
         
@@ -328,17 +348,17 @@ class OSCRouter:
         # Initialize voice manager with empty list (will populate after loading config)
         self.voice_manager: VoiceManager = VoiceManager([])
         
-        # Create OSC dispatcher
+        # Create OSC dispatcher for handling INBOUND messages
         self.dispatcher: Dispatcher = Dispatcher()
         
-        # Add default handlers
+        # Add default handlers for all the types of INBOUND messages we can receive
         self.add_default_handlers()
         
         # Load config if provided
         if config_file:
             self.load_config(config_file)
         
-        # Initialize server
+        # Initialize server that will listen for INBOUND messages
         self.server: Optional[ThreadingOSCUDPServer] = None
     
     def setup_ui_client(self, host: str, port: int) -> bool:
@@ -460,7 +480,12 @@ class OSCRouter:
     
     def handle_register_ui(self, address: str, *args: Any) -> None:
         """
-        Handle UI client registration.
+        Handle UI client registration (INBOUND message).
+        
+        This is how UIs establish an INBOUND channel to the router.
+        The UI sends its host:port information so we can talk back to it.
+        
+        Flow: UI → Router (registration) → Router ↔ UI (bidirectional after setup)
         
         Args:
             address: OSC address
@@ -476,7 +501,7 @@ class OSCRouter:
         LOG.info(f"Registering UI client at {host}:{port}")
         self.setup_ui_client(host, port)
         
-        # Send current state to UI
+        # Send current state to UI (OUTBOUND)
         self.send_ui_status("info", f"Router active with {len(self.voice_manager.voices)} voices")
     
     def handle_note_on(self, address: str, *args: Any) -> None:
@@ -926,10 +951,13 @@ class OSCRouter:
     
     def run(self) -> None:
         """
-        Start the OSC router.
+        Start the OSC router's main INBOUND listening server.
+        
+        This starts the server that receives all incoming OSC messages
+        from MIDI bridges, UIs, and other OSC sources.
         """
         try:
-            # Create and start OSC server
+            # Create and start OSC server for INBOUND messages
             server = ThreadingOSCUDPServer(("0.0.0.0", self.router_port), self.dispatcher)
             LOG.info(f"OSC Router listening on 0.0.0.0:{self.router_port}")
             LOG.info(f"Routing to {len(self.voice_manager.voices)} synth voices")
@@ -941,14 +969,14 @@ class OSCRouter:
             # Store server reference
             self.server = server
             
-            # Serve forever
+            # Serve forever - keep listening for INBOUND messages
             server.serve_forever()
         except KeyboardInterrupt:
             LOG.info("\nOSC Router stopped.")
         except Exception as e:
             LOG.error(f"Error starting server: {e}")
             
-            # Send to UI
+            # Send to UI (OUTBOUND)
             if self.ui_bridge.ui_client:
                 self.send_ui_status("error", f"Router error: {str(e)}")
 

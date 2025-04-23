@@ -1,8 +1,8 @@
 """
 Voice class for managing individual synth voice instances.
 
-This module provides the Voice class which handles communication with a single synth
-voice instance via OSC messages.
+Because even synths need their personal space - one voice per instance,
+living in harmony on different ports.
 """
 from typing import Optional, Union, Any
 
@@ -13,8 +13,9 @@ class Voice:
     """
     Represents a single synth voice instance with its state.
     
-    This class encapsulates all the state and behavior related to a single voice
-    in a polyphonic synthesizer, including sending OSC messages to control it.
+    Think of this as the digital equivalent of a single key on a piano,
+    except it can only play one note at a time. It's not multitasking,
+    it's focusing on doing one thing really well.
     """
     
     def __init__(
@@ -26,6 +27,9 @@ class Voice:
     ) -> None:
         """
         Initialize a voice instance.
+        
+        Assigns this voice its digital identity and address.
+        No existential crisis here, just pure purpose.
         
         Args:
             voice_id: Unique identifier for this voice
@@ -43,16 +47,18 @@ class Voice:
         self.client = udp_client.SimpleUDPClient(self.host, port)
     
     def __repr__(self) -> str:
-        """Return string representation of the voice."""
+        """Return string representation - for debugging and those existential moments."""
         return f"Voice(id={self.id}, port={self.port}, host={self.host}, note={self.note}, active={self.is_active})"
     
     def note_on(self, note: int, velocity: float) -> bool:
         """
         Send note-on messages to this voice.
         
+        The digital equivalent of pressing a key - with feeling!
+        
         Args:
             note: MIDI note number (0-127)
-            velocity: Note velocity (0.0-1.0)
+            velocity: Note velocity (0.0-1.0) - how hard you hit the key
             
         Returns:
             True if message was sent successfully
@@ -61,7 +67,7 @@ class Voice:
         self.velocity = velocity
         self.is_active = True
         
-        # Send the three standard synth parameters
+        # The holy trinity of synth parameters
         self.send_osc("/freq", midi_to_freq(note))
         self.send_osc("/gain", velocity)
         self.send_osc("/gate", 1)
@@ -73,6 +79,10 @@ class Voice:
         """
         Send note-off message to this voice.
         
+        The digital equivalent of letting go of a key.
+        We're really paranoid about stuck notes, so we
+        send the "shut up" command in three different ways.
+        
         Returns:
             True if note-off was sent, False if voice was not active
         """
@@ -80,10 +90,10 @@ class Voice:
             # Send gate off
             self.send_osc("/gate", 0)
             
-            # Also send an all-notes-off message as a backup
+            # Belt and suspenders approach - better safe than sorry
             self.send_osc("/allNotesOff", 1)
             
-            # For extra safety, send a direct OSC panic to this specific voice
+            # And a fire extinguisher, just in case
             self.send_osc("/panic", 1)
             
             self.is_active = False
@@ -94,6 +104,8 @@ class Voice:
     def reset(self) -> bool:
         """
         Reset this voice to idle state.
+        
+        The digital equivalent of "have you tried turning it off and on again?"
         
         Returns:
             True if reset was successful
@@ -106,6 +118,8 @@ class Voice:
     def set_cc(self, cc_num: int, value: float) -> bool:
         """
         Send CC message to this voice.
+        
+        All those knobs and sliders have to do something, right?
         
         Args:
             cc_num: MIDI CC number
@@ -128,6 +142,8 @@ class Voice:
         """
         Send sustain pedal state directly.
         
+        For when you want notes to hang around after the party's over.
+        
         Args:
             value: Sustain value (0.0-1.0)
             
@@ -140,6 +156,8 @@ class Voice:
     def set_param(self, param: str, value: Any) -> bool:
         """
         Send generic parameter to this voice.
+        
+        The Swiss Army knife of parameter setting.
         
         Args:
             param: Parameter name (without leading /)
@@ -154,6 +172,10 @@ class Voice:
     def send_osc(self, path: str, value: Any) -> bool:
         """
         Send OSC message to this voice's synth instance.
+        
+        The digital postal service - neither snow nor rain nor
+        heat nor gloom of night stays these packets from their
+        appointed route.
         
         Args:
             path: OSC path (with or without leading /)

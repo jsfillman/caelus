@@ -54,16 +54,6 @@ def kill_all_processes():
     LOG.info("All processes killed")
     return True
 
-def set_light(label, on):
-    """Set a GUI indicator light on or off"""
-    color = "#FFA500" if on else "#333"
-    label.setStyleSheet(f"""
-        background-color: {color};
-        border-radius: 15px;
-        border: 2px solid #FFA500;
-    """)
-    label.repaint()
-
 def monitor_process_output(proc, name):
     """Monitor the stdout and stderr of a process"""
     while proc.poll() is None:
@@ -77,10 +67,30 @@ def monitor_process_output(proc, name):
 
 def send_osc(osc_client, address, value):
     """Send an OSC message and log it"""
+    if osc_client is None:
+        LOG.error("OSC client is None, cannot send message")
+        return False
+        
     try:
-        LOG.info(f"Sending OSC: {address} {value}")
+        # Log before sending in case the send causes a crash
+        LOG.info(f"Preparing to send OSC: {address} {value}")
+        
+        # Validate input types
+        if not isinstance(address, str):
+            LOG.error(f"Invalid OSC address type: {type(address)}")
+            return False
+            
+        # Make sure method exists
+        if not hasattr(osc_client, 'send_message'):
+            LOG.error(f"OSC client does not have send_message method")
+            return False
+            
+        # Send the message with a proper try/except
         osc_client.send_message(address, value)
+        LOG.info(f"OSC message sent successfully: {address}")
         return True
     except Exception as e:
-        LOG.error(f"ERROR sending OSC message: {e}")
+        LOG.error(f"ERROR sending OSC message to {address}: {e}")
+        import traceback
+        traceback.print_exc()
         return False 

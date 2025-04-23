@@ -13,6 +13,29 @@ This project solves a common limitation with synthesizers that use OSC: while so
 3. Handle sustain pedal, modulation wheel, and other MIDI controllers properly
 4. Support voice allocation with highest-note priority and voice stealing
 
+## Simple Data Flow
+
+Caelus maintains a clean and straightforward data flow:
+
+```
+    ┌─────────┐       ┌─────────┐       ┌─────────┐       ┌─────────┐
+    │  MIDI   │       │  MIDI   │       │   OSC   │       │  Synth  │
+    │ Device  │ MIDI  │   OSC   │  OSC  │ Router  │  OSC  │ Voices  │
+    │(Keyboard)│ ────► │ Bridge  │ ────► │(Caelus) │ ────► │(1,2,3,4)│
+    └─────────┘       └─────────┘       └─────┬───┘       └─────────┘
+                           ▲                  │
+                           │                  │ OSC
+                           │                  ▼
+                      ┌────┴────┐        ┌────────┐
+                      │   UI    │◄───────│TouchOSC│
+                      │Feedback │   OSC  │  or UI │
+                      └─────────┘        └────────┘
+```
+
+- **Bidirectional Communication**: UI components can both send commands to the router and receive status updates
+- **Simple Flow**: MIDI → OSC → Router → Synth Voices
+- **Flexible Setup**: Works with any MIDI device and any OSC-compatible synthesizer
+
 ## Installation
 
 ### Prerequisites
@@ -101,11 +124,11 @@ The script will prompt you to select a MIDI input device, then begin sending MID
 - **Expression Pedal**: Also maps to filter cutoff with independent control
 - **Pitch Bend**: Affects active notes uniformly
 - **Aftertouch**: Supports both channel and polyphonic aftertouch
-- **UI Feedback**: Can send OSC messages to a UI client for visualization
+- **UI Feedback**: Both sends status to and receives commands from UI clients via OSC
 
 ## Architecture
 
-The codebase is organized into several modular components:
+The codebase is organized into several modular components, each with a single responsibility:
 
 ```
 lib/
@@ -119,11 +142,11 @@ lib/
 
 ### Key Classes
 
-- **OSCRouter**: Main class that handles incoming OSC messages and routes them to appropriate voices
+- **OSCRouter**: Handles incoming messages and routes them to appropriate voices
 - **VoiceManager**: Manages allocation of voices for polyphonic playing
 - **Voice**: Represents a single synth voice instance
 - **NoteTracker**: Tracks note allocation state and sustain information
-- **UIBridge**: Handles communication with UI clients via OSC
+- **UIBridge**: Handles bidirectional communication with UI clients via OSC
 - **ConfigLoader**: Loads and parses configuration files
 
 ## OSC Message Format
@@ -139,6 +162,18 @@ The system uses the following OSC message format:
 - All notes off: `/router/all_notes_off`
 - Parameter setting: `/router/param [param_name] [value]`
 - Variable getting/setting: `/router/get [var_path]` and `/router/set [var_path] [value]`
+
+## UI Integration
+
+Caelus supports bidirectional communication with UI clients:
+
+1. **Router → UI**: The router sends status updates, parameter changes, and voice allocation info to registered UIs
+2. **UI → Router**: UIs can send commands to control the router, change parameters, or trigger actions
+
+To register a UI client with the router, send an OSC message to:
+```
+/router/register_ui [host] [port]
+```
 
 ## Limitations
 
