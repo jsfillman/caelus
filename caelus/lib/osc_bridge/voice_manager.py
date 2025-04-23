@@ -210,13 +210,18 @@ class VoiceManager:
         """Set pitch bend value for all active voices"""
         self.pitch_bend = value
         
+        # Default pitch bend range (can be overridden by patch)
+        bend_range = 2.0
+        if hasattr(self, 'patch_settings') and 'pitch_bend_range' in self.patch_settings:
+            bend_range = self.patch_settings['pitch_bend_range']
+        
         # Update frequency for all active voices
         for note, voice_idx in self.active_notes.items():
             voice = self.voices[voice_idx]
-            freq = midi_to_freq(note, self.pitch_bend)
+            freq = midi_to_freq(note, self.pitch_bend, bend_range)
             voice.send_osc("/freq", freq)
         
-        LOG.info(f"Pitch bend: {value:.2f}")
+        LOG.info(f"Pitch bend: {value:.2f} (range: ±{bend_range} semitones)")
         return True
         
     def all_notes_off(self):
@@ -262,20 +267,26 @@ class VoiceManager:
     def _update_filter_cutoff(self):
         """Update filter cutoff based on modulation wheel and other controllers"""
         # Calculate filter cutoff based on modulation wheel
-        # Modulation wheel reduces cutoff from default value down to 200Hz
-        # (or some reasonable minimum for your synth)
         LOG.info(f"Updating filter cutoff with mod wheel: {self.mod_wheel_value:.2f}, expression: {self.expression_value:.2f}")
         
         # Start with default cutoff
         cutoff = self.default_cutoff
+        
+        # Check for modulation settings in patch
+        mod_depth = 0.8  # Default modulation depth
+        if hasattr(self, 'patch_settings') and 'mod_depth' in self.patch_settings:
+            mod_depth = self.patch_settings['mod_depth']
         
         # Apply modulation wheel (inverted - higher value = lower cutoff)
         # This creates a filter sweep effect controlled by mod wheel
         min_cutoff = 200.0  # 200 Hz is a reasonable minimum
         mod_range = self.default_cutoff - min_cutoff
         
+        # Scale the modulation effect by the mod_depth parameter
+        mod_effect = self.mod_wheel_value * mod_depth
+        
         # Linear scaling with the modulation wheel
-        cutoff = self.default_cutoff - (self.mod_wheel_value * mod_range)
+        cutoff = self.default_cutoff - (mod_effect * mod_range)
         
         # Apply additional expression scaling if desired
         # (expression pedal is CC11)
@@ -286,7 +297,7 @@ class VoiceManager:
         # Ensure cutoff stays in reasonable range
         cutoff = max(min_cutoff, min(20000.0, cutoff))
         
-        LOG.info(f"Calculated new cutoff: {cutoff:.2f} Hz (default: {self.default_cutoff:.2f}, mod: {self.mod_wheel_value:.2f})")
+        LOG.info(f"Calculated new cutoff: {cutoff:.2f} Hz (default: {self.default_cutoff:.2f}, mod: {self.mod_wheel_value:.2f}, depth: {mod_depth:.2f})")
         
         # Store the current cutoff
         last_cutoff = self.current_cutoff

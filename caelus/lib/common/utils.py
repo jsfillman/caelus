@@ -12,11 +12,11 @@ DEFAULT_ROUTER_PORT = 9000
 DEFAULT_SYNTH_HOST = "127.0.0.1"
 DEFAULT_SYNTH_NAME = "simple"
 
-def midi_to_freq(note, pitch_bend=0.0):
+def midi_to_freq(note, pitch_bend=0.0, bend_range=2.0):
     """Convert MIDI note to frequency with pitch bend
     pitch_bend should be in range -1.0 to 1.0 (typically from pitch wheel)
+    bend_range is the range in semitones (default ±2 semitones)
     """
-    # Apply pitch bend (default ±2 semitones)
-    bend_range = 2.0  # semitones
+    # Apply pitch bend (configurable range)
     note = note + (pitch_bend * bend_range)
     return 440.0 * (2 ** ((note - 69) / 12)) 

@@ -489,10 +489,14 @@ class MidiOscGui(QWidget):
             ui_path = os.path.join(bank_dir, "ui.py")
             if os.path.exists(ui_path):
                 LOG.info(f"Starting UI: {ui_path}")
+                # Create environment with current directory in PYTHONPATH
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
                 ui_proc = subprocess.Popen(
                     ["python3", ui_path],
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
+                    stderr=subprocess.PIPE,
+                    env=env
                 )
                 active_processes.append(ui_proc)
             else:

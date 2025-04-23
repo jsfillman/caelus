@@ -91,7 +91,11 @@ class Voice:
         if isinstance(value, (int, float)):
             value = float(value)
         
-        LOG.info(f"Voice {self.id}: Sending OSC message {full_path} = {value} to {self.host}:{self.port}")
+        # Add extra debug info for important parameters
+        if path in ["/freq", "/cutoff", "/mod_depth", "/pitch_bend_range"]:
+            LOG.info(f"Voice {self.id}: Sending IMPORTANT OSC message {full_path} = {value} to {self.host}:{self.port}")
+        else:
+            LOG.debug(f"Voice {self.id}: Sending OSC message {full_path} = {value} to {self.host}:{self.port}")
         
         try:
             self.client.send_message(full_path, value)

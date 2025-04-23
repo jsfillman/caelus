@@ -453,46 +453,42 @@ class OSCRouter:
         self.send_ui_status("warning", "All notes off - emergency clear")
         
     def handle_param_all_voices(self, address, *args):
-        """Handle setting a parameter on all active voices"""
-        LOG.info(f"Parameter change request received: {address} {args}")
-        
+        """Handle setting a parameter on all voices"""
         if len(args) < 2:
-            LOG.warning(f"Invalid param message, need param_name and value: {args}")
+            LOG.warning(f"Invalid param_all message, need param name and value: {args}")
             return
             
-        # First arg is parameter name, second is value
-        param_name = args[0]
-        value = float(args[1])
+        # Extract the parameter name and value
+        param_name = str(args[0])
+        value = float(args[1]) if len(args) > 1 else 0.0
         
-        LOG.info(f"Setting parameter {param_name} = {value} on all voices")
+        # Store any patch settings in the voice manager for reference
+        # This collects parameters like mod_depth, pitch_bend_range, etc.
+        if not hasattr(self.voice_manager, 'patch_settings'):
+            self.voice_manager.patch_settings = {}
         
-        active_count = 0
-        # Apply to all voices
-        for voice in self.voice_manager.voices:
-            if voice.is_active:
-                voice.send_osc(f"/{param_name}", value)
-                active_count += 1
-                LOG.debug(f"Set {param_name} = {value} on voice {voice.id}")
+        self.voice_manager.patch_settings[param_name] = value
         
-        if active_count > 0:            
-            LOG.info(f"Set {param_name} = {value} on {active_count} active voices")
+        LOG.info(f"Setting param on all voices: {param_name} = {value}")
+        
+        # Special handling for certain parameters
+        if param_name == "cutoff":
+            self.voice_manager.default_cutoff = value
+            self.voice_manager._update_filter_cutoff()
+            LOG.info(f"Updated default cutoff to {value:.2f}")
+            
+            # Apply filter cutoff
+            for voice in self.voice_manager.voices:
+                voice.send_osc("/cutoff", self.voice_manager.current_cutoff)
         else:
-            LOG.info(f"No active voices to set {param_name} = {value}")
-            # Fallback: send to all voices regardless of active state
+            # Regular parameter - apply to all voices
             for voice in self.voice_manager.voices:
                 voice.send_osc(f"/{param_name}", value)
         
-        # Always update UI with parameter changes
-        # This ensures other UI components get updated with parameter values
+        # Send to UI
         self.send_ui_param(param_name, value)
         
-        # Also update special parameters like cutoff when they change via other means
-        if param_name == "cutoff":
-            # Update internal state to keep it in sync
-            self.voice_manager.default_cutoff = value
-            # Only update if this wasn't caused by modulation wheel
-            if self.voice_manager.mod_wheel_value < 0.01:
-                self.voice_manager.current_cutoff = value
+        return True
     
     def handle_voice_reset(self, address, *args):
         """Handle resetting a specific voice"""
