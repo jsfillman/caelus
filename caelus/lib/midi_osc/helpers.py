@@ -85,6 +85,25 @@ def send_osc(osc_client, address, value):
             LOG.error(f"OSC client does not have send_message method")
             return False
             
+        # Ensure we're sending properly typed values
+        # If value is a list, ensure all elements are properly typed
+        if isinstance(value, list):
+            # Make a copy to avoid modifying the original
+            processed_value = []
+            for item in value:
+                # Convert booleans to integers (0/1)
+                if isinstance(item, bool):
+                    processed_value.append(1 if item else 0)
+                # Ensure numbers are proper floats for OSC
+                elif isinstance(item, (int, float)):
+                    processed_value.append(float(item))
+                else:
+                    processed_value.append(item)
+            value = processed_value
+        # Handle single values as well
+        elif isinstance(value, bool):
+            value = 1 if value else 0
+            
         # Send the message with a proper try/except
         osc_client.send_message(address, value)
         LOG.info(f"OSC message sent successfully: {address}")

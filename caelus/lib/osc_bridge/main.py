@@ -8,7 +8,14 @@ doesn't sound like a cat walking across a piano.
 """
 import argparse
 import sys
+import os
 from typing import Optional, Tuple
+
+# Add the project root to sys.path to allow importing from lib packages
+# This ensures that when we run the module directly, we can still import lib modules
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from lib.common.utils import LOG, DEFAULT_ROUTER_PORT
 from lib.osc_bridge.router import OSCRouter
@@ -54,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         type=int, 
         help="Port for sending UI feedback"
     )
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Run router in background (non-blocking)"
+    )
     
     return parser.parse_args()
 
@@ -90,7 +102,16 @@ def main() -> int:
             LOG.info(f"Created {num_voices} default voices starting at port {args.start_port}")
         
         # Run the router - engage warp drive!
-        router.run()
+        if args.background:
+            # Run in background (non-blocking)
+            router.start_in_background()
+            # Keep the process alive but don't block
+            import time
+            while True:
+                time.sleep(1)
+        else:
+            # Run in foreground (blocking)
+            router.run()
         return 0
     
     except KeyboardInterrupt:

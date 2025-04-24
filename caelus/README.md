@@ -91,7 +91,7 @@ This script starts each instance on the ports specified in your configuration fi
 ### 2. Start the OSC Router
 
 ```bash
-python osc_router.py --config voices.yaml
+python lib/osc_bridge/main.py --config voices.yaml
 ```
 
 This starts the OSC router, which listens for messages from the MIDI-OSC bridge and routes them to the appropriate synth instance.
@@ -109,7 +109,7 @@ Available options:
 ### 3. Start the MIDI-OSC Bridge
 
 ```bash
-python midi_osc.py [router_port]
+python lib/midi_osc/main.py [router_port]
 ```
 
 Where `router_port` is the port where the OSC router is listening (default: 9000).
@@ -183,6 +183,59 @@ To register a UI client with the router, send an OSC message to:
 ## License
 
 This project is open source under the MIT license.
+
+## Debugging OSC Communication
+
+If you're experiencing issues with OSC communication between components (no sound, stuck notes, etc.), Caelus includes several debugging tools to help diagnose and fix the problem.
+
+### Increase Logging Verbosity
+
+The system's logging level can be increased to DEBUG for more detailed information:
+
+1. Edit `lib/common/utils.py` to change:
+   ```python
+   logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+   ```
+
+2. Restart the OSC Router and MIDI-OSC Bridge to see detailed logs
+
+### OSC Debug Tools
+
+Caelus includes two debugging tools to verify OSC connectivity:
+
+#### 1. OSC Connectivity Tester
+
+Use this tool to verify the synth is reachable on the correct ports:
+
+```bash
+python tools/debug_osc.py --host 127.0.0.1 --ports 5510,5610,5710,5810 --test-note
+```
+
+This sends test messages to each specified port and confirms they can be reached.
+
+#### 2. OSC Monitor
+
+Monitor all incoming OSC messages on specific ports:
+
+```bash
+python tools/monitor_osc.py --ports 9000,5510,5610,5710,5810
+```
+
+This tool listens on multiple ports simultaneously and displays any incoming OSC messages. It's useful for confirming whether messages are being properly sent between components.
+
+### Common Issues
+
+1. **No sound but no errors**: Make sure the synth instances are running and listening on the correct ports
+2. **OSC messages not reaching synth**: Verify the OSC path format (e.g., `/synth/freq`) matches what your synth expects
+3. **Stuck notes**: Check if note-off messages are being sent properly
+
+### Advanced Debugging
+
+For advanced debugging, use a network packet analyzer like Wireshark to capture and inspect OSC UDP packets:
+
+1. Install [Wireshark](https://www.wireshark.org/)
+2. Capture traffic on the loopback interface
+3. Apply a display filter for your OSC ports: `udp.port == 5510 || udp.port == 5610 || udp.port == 9000`
 
 ## Acknowledgements
 

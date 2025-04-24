@@ -190,8 +190,11 @@ class Voice:
         # Format: /synthName/param
         full_path = f"/{self.synth_name}{path}"
         
+        # Convert boolean values to integers (0/1)
+        if isinstance(value, bool):
+            value = 1 if value else 0
         # Ensure value is float for Faust
-        if isinstance(value, (int, float)):
+        elif isinstance(value, (int, float)):
             value = float(value)
         
         # Add extra debug info for important parameters
@@ -201,8 +204,22 @@ class Voice:
             LOG.debug(f"Voice {self.id}: Sending OSC message {full_path} = {value} to {self.host}:{self.port}")
         
         try:
+            # Validate client is properly initialized
+            if not hasattr(self, 'client') or self.client is None:
+                LOG.error(f"Voice {self.id}: OSC client is None or not initialized")
+                return False
+                
+            # Validate host and port are set correctly
+            LOG.debug(f"Voice {self.id}: OSC client targeting {self.host}:{self.port}")
+            
+            # Validate message format before sending
+            LOG.debug(f"Voice {self.id}: OSC message details - path: {full_path}, value type: {type(value)}, value: {value}")
+            
+            # Send the message
             self.client.send_message(full_path, value)
             return True
         except Exception as e:
             LOG.error(f"Error sending OSC to voice {self.id} ({self.host}:{self.port}): {e}")
+            import traceback
+            LOG.error(f"Stack trace: {traceback.format_exc()}")
             return False 

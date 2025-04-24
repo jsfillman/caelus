@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""
+Caelus Synthesizer System - Main Launcher
+
+A unified launcher for the Caelus synthesizer system that:
+- Shows a splash screen during startup
+- Auto-selects the first MIDI interface
+- Auto-loads the default bank
+- Provides loading progress indicators
+- Monitors synth connectivity
+"""
+import os
+import sys
+import time
+import signal
+import argparse
+from typing import Optional, List, Dict, Any
+
+from PyQt6.QtWidgets import (
+    QApplication, QSplashScreen, QMainWindow, QTabWidget, QWidget, QVBoxLayout
+)
+from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtCore import Qt, QTimer
+
+# Add the project root to sys.path to allow importing from lib packages
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from lib.common.utils import LOG
+from lib.common.launcher_gui import LauncherGUI
+from lib.osc_bridge.router import OSCRouter
+
+# Default settings
+DEFAULT_ROUTER_PORT = 9000
+DEFAULT_UI_PORT = 9002
+DEFAULT_PRESETS_DIR = "presets"
+DEFAULT_BANK = "00 - Simple Mono"
+SPLASH_IMAGE = "Caelus.png"
+APP_ICON = "CaelusAppIcon.png"
+
+class CaelusLauncher:
+    """Main launcher for the Caelus synthesizer system."""
+    
+    def __init__(self, args: argparse.Namespace):
+        """Initialize the launcher with command line arguments."""
+        self.args = args
+        self.app = QApplication(sys.argv)
+        
+        # Set application icon for macOS dock
+        if os.path.exists(APP_ICON):
+            app_icon = QIcon(APP_ICON)
+            self.app.setWindowIcon(app_icon)
+            LOG.info(f"Set application icon from {APP_ICON}")
+        else:
+            LOG.warning(f"Application icon {APP_ICON} not found")
+        
+        # Setup splash screen
+        self.splash = self._setup_splash_screen()
+        
+        # Router and GUI references
+        self.router: Optional[OSCRouter] = None
+        self.gui: Optional[LauncherGUI] = None
+        
+        # Main window with tab widget
+        self.main_window = QMainWindow()
+        self.main_window.setWindowTitle("Caelus Synthesizer")
+        self.main_window.resize(2224, 1668)  # iPad dimensions
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        self.main_window.setCentralWidget(self.tab_widget)
+        
+        # Global controls tab (will contain LauncherGUI)
+        self.global_tab = QWidget()
+        self.global_layout = QVBoxLayout(self.global_tab)
+        self.tab_widget.addTab(self.global_tab, "Global")
+        
+        # Synth tab (will be populated when a bank is loaded)
+        self.synth_tab = QWidget()
+        self.synth_layout = QVBoxLayout(self.synth_tab)
+        self.synth_layout.addWidget(QWidget())  # Placeholder
+        self.tab_widget.addTab(self.synth_tab, "Synth")
+        
+        # Ensure Global tab is selected at startup
+        self.tab_widget.setCurrentIndex(0)
+        
+        # Reference to the currently loaded synth UI module
+        self.current_synth_ui = None
+        
+        # Connectivity monitor timer
+        self.connectivity_timer: Optional[QTimer] = None
+    
+    def _setup_splash_screen(self) -> QSplashScreen:
+        """Create and display a splash screen."""
+        splash_pixmap = QPixmap(SPLASH_IMAGE)
+        splash = QSplashScreen(splash_pixmap, Qt.WindowType.WindowStaysOnTopHint)
+        splash.setEnabled(False)
+        splash.show()
+        splash.showMessage("Initializing Caelus...", 
+                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, 
+                          Qt.GlobalColor.white)
+        self.app.processEvents()
+        return splash
+    
+    def start_router(self) -> None:
+        """Start the OSC router for voice allocation."""
+        self.splash.showMessage("Starting synth router...", 
+                              Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, 
+                              Qt.GlobalColor.white)
+        self.app.processEvents()
+        
+        # Create router instance
+        self.router = OSCRouter(
+            router_port=self.args.port,
+            ui_host="127.0.0.1", 
+            ui_port=self.args.ui_port
+        )
+        
+        # Start router in a separate thread
+        self.router.start_in_background()
+        time.sleep(0.5)  # Give router time to initialize
+    
+    def start_gui(self) -> None:
+        """Start the Launcher GUI with auto-selection of first interface and default bank."""
+        self.splash.showMessage("Starting MIDI interface...", 
+                              Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, 
+                              Qt.GlobalColor.white)
+        self.app.processEvents()
+        
+        # Create GUI and embed it in the Global tab
+        self.gui = LauncherGUI(
+            osc_ip=self.args.ip,
+            osc_port=self.args.port,
+            router_name="router",
+            presets_dir=self.args.presets,
+            ui_osc_port=self.args.ui_port,
+            auto_select_first_interface=True,
+            default_bank=DEFAULT_BANK,
+            on_bank_loaded=self.on_bank_loaded,  # Connect bank loaded signal
+            parent=self.global_tab  # Set parent to the global tab
+        )
+        
+        # Add GUI to the global tab
+        self.global_layout.addWidget(self.gui)
+        
+        # Setup connectivity monitor
+        self._setup_connectivity_monitor()
+        
+        # Show main window
+        self.main_window.show()
+        
+        # Close splash screen once GUI is shown
+        self.splash.finish(self.main_window)
+    
+    def on_bank_loaded(self, bank_name: str, bank_dir: str) -> None:
+        """
+        Handle bank loaded event from LauncherGUI.
+        
+        Args:
+            bank_name: Name of the loaded bank
+            bank_dir: Full path to the bank directory
+        """
+        # Clear the current synth UI if any
+        self.clear_synth_ui()
+        
+        # Check if the bank has a UI module
+        ui_path = os.path.join(bank_dir, "ui.py")
+        if os.path.exists(ui_path):
+            LOG.info(f"Loading UI module from: {ui_path}")
+            
+            try:
+                # Load the UI module
+                ui_module = self.load_ui_module(ui_path)
+                
+                # Check if the module has a create_ui_widget function
+                if hasattr(ui_module, 'create_ui_widget'):
+                    # Create the UI widget
+                    synth_ui = ui_module.create_ui_widget()
+                    
+                    # Remove placeholder and add the synth UI
+                    for i in reversed(range(self.synth_layout.count())): 
+                        self.synth_layout.itemAt(i).widget().setParent(None)
+                    
+                    self.synth_layout.addWidget(synth_ui)
+                    self.current_synth_ui = synth_ui
+                    
+                    # Update tab text with bank name
+                    self.tab_widget.setTabText(1, f"Synth: {bank_name}")
+                    
+                    # Switch to the synth tab
+                    self.tab_widget.setCurrentIndex(1)
+                    
+                    LOG.info(f"Loaded synth UI for bank: {bank_name}")
+                else:
+                    LOG.warning(f"UI module does not have create_ui_widget function: {ui_path}")
+                    # Update tab text but don't switch to it
+                    self.tab_widget.setTabText(1, f"Synth: {bank_name} (No UI)")
+            except Exception as e:
+                LOG.error(f"Error loading UI module: {e}")
+                # Update tab text to indicate error
+                self.tab_widget.setTabText(1, f"Synth: {bank_name} (Error)")
+        else:
+            LOG.info(f"No UI module found at: {ui_path}")
+            
+            # Update tab text to indicate no UI
+            self.tab_widget.setTabText(1, "Synth: None")
+    
+    def load_ui_module(self, ui_path: str) -> Any:
+        """
+        Dynamically load a Python module from a file path.
+        
+        Args:
+            ui_path: Path to the Python module file
+            
+        Returns:
+            Loaded module object
+        """
+        module_name = os.path.basename(ui_path).replace('.py', '')
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(module_name, ui_path)
+        module = importlib.util.module_from_spec(spec)
+        
+        # Add current directory to path to resolve imports
+        sys.path.insert(0, os.path.dirname(ui_path))
+        
+        # Load the module
+        spec.loader.exec_module(module)
+        
+        # Remove the directory from path
+        sys.path.pop(0)
+        
+        return module
+    
+    def clear_synth_ui(self) -> None:
+        """Clear the current synth UI from the synth tab."""
+        if self.current_synth_ui:
+            self.current_synth_ui.setParent(None)
+            self.current_synth_ui = None
+            
+            # Add a placeholder widget
+            self.synth_layout.addWidget(QWidget())
+    
+    def _setup_connectivity_monitor(self) -> None:
+        """Setup a timer to periodically check synth connectivity."""
+        self.connectivity_timer = QTimer()
+        self.connectivity_timer.timeout.connect(self._check_synth_connectivity)
+        self.connectivity_timer.start(30000)  # Check every 30 seconds
+    
+    def _check_synth_connectivity(self) -> None:
+        """Check if all synth voices are connected and update UI accordingly."""
+        if self.gui and hasattr(self.gui, "check_synth_connectivity"):
+            self.gui.check_synth_connectivity()
+            
+    def run(self) -> int:
+        """
+        Run the application.
+        
+        Returns:
+            Exit code
+        """
+        # Start router
+        self.start_router()
+        
+        # Start GUI
+        self.start_gui()
+        
+        # Run the event loop
+        return self.app.exec()
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command line arguments.
+    
+    Returns:
+        Parsed command line arguments
+    """
+    parser = argparse.ArgumentParser(description="Caelus Synthesizer System")
+    parser.add_argument("--port", type=int, default=DEFAULT_ROUTER_PORT, 
+                       help=f"Router port (default: {DEFAULT_ROUTER_PORT})")
+    parser.add_argument("--ip", type=str, default="127.0.0.1",
+                       help="Router IP address (default: 127.0.0.1)")
+    parser.add_argument("--presets", type=str, default=DEFAULT_PRESETS_DIR,
+                       help=f"Presets directory (default: {DEFAULT_PRESETS_DIR})")
+    parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT,
+                      help=f"UI feedback port (default: {DEFAULT_UI_PORT})")
+    parser.add_argument("--no-splash", action="store_true",
+                      help="Disable splash screen")
+    
+    return parser.parse_args()
+
+def main() -> int:
+    """
+    Main entry point for Caelus.
+    
+    Returns:
+        Exit code
+    """
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Create and run launcher
+    launcher = CaelusLauncher(args)
+    return launcher.run()
+
+if __name__ == "__main__":
+    sys.exit(main()) 

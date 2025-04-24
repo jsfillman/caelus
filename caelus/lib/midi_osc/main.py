@@ -6,8 +6,16 @@ The MIDI whisperer - captures your keyboard's intentions
 and translates them into OSC packets that the router can understand.
 """
 import sys
+import os
 import argparse
 from typing import NoReturn
+
+# Add the project root to sys.path to allow importing from lib packages
+# This ensures that when we run the module directly, we can still import lib modules
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from PyQt6.QtWidgets import QApplication
 
 from lib.common.utils import LOG
@@ -77,4 +85,4 @@ def main() -> int:
     return app.exec() if hasattr(app, 'exec') else app.exec_()
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main()) 

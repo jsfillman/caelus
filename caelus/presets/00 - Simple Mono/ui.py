@@ -1,471 +1,242 @@
+#!/usr/bin/env python3
+"""
+Simple Mono Synth UI
+
+A basic UI for the Simple Mono synth preset.
+"""
 import sys
-import json
-import logging
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDial,
-    QTabWidget, QGridLayout, QSlider, QComboBox
-)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
-from pythonosc import udp_client, osc_message_builder
-from pythonosc.dispatcher import Dispatcher
-from pythonosc.osc_server import BlockingOSCUDPServer
-import threading
-import random
 import os
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget,
+    QSlider, QDial, QHBoxLayout, QGroupBox, QPushButton
+)
+from PyQt6.QtCore import Qt, pyqtSignal as Signal, QObject
+from PyQt6.QtGui import QFont
 
-# --- Set up logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-LOG = logging.getLogger(__name__)
+from lib.common.utils import set_app_icon, LOG
+from pythonosc import udp_client
 
-# --- OSC Setup ---
+# Default OSC settings for communicating with the router
 OSC_IP = "127.0.0.1"
-OSC_ROUTER_PORT = 9001
-OSC_UI_PORT = 9100  # Port for receiving OSC messages
-osc = udp_client.SimpleUDPClient(OSC_IP, OSC_ROUTER_PORT)
+OSC_PORT = 9000
+ROUTER_NAME = "router"
 
-# --- Main Synth UI ---
-class SynthControlPanel(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Caelus Control UI")
-        self.setStyleSheet("""
-            QWidget { background-color: #111; color: #FFA500; font-family: 'SF Mono', 'Menlo', monospace; }
-            QDial {
-                background-color: qradialgradient(cx:0.5, cy:0.5, radius:1.0, fx:0.5, fy:0.5, stop:0 #FFA500, stop:1 #111);
-                border: 2px solid #FFA500;
-                border-radius: 35px;
-                width: 70px;
-                height: 70px;
-            }
-            QLabel { font-size: 14px; color: #FFA500; }
-            QPushButton {
-                background-color: #222;
-                color: #FFA500;
-                border: 1px solid #FFA500;
-                padding: 6px;
-            }
-            QTabWidget::pane {
-                border: 1px solid #FFA500;
-                background: #222;
-            }
-            QTabWidget::tab-bar {
-                left: 5px;
-            }
-            QTabBar::tab {
-                background: #222;
-                border: 1px solid #FFA500;
-                padding: 5px;
-                color: #FFA500;
-            }
-            QTabBar::tab:selected {
-                background: #333;
-            }
-            QSlider::groove:horizontal {
-                border: 1px solid #999999;
-                height: 8px;
-                background: #222;
-                margin: 2px 0;
-            }
-            QSlider::handle:horizontal {
-                background: #FFA500;
-                border: 1px solid #5c5c5c;
-                width: 18px;
-                margin: -2px 0;
-                border-radius: 3px;
-            }
-            QComboBox {
-                background-color: #222;
-                color: #FFA500;
-                border: 1px solid #FFA500;
-                padding: 5px;
-            }
-        """)
-
-        # Setup tabs
-        self.tabs = QTabWidget()
-        self.router_tab = QWidget()
-        self.synth_tab = QWidget()
-        self.voices_tab = QWidget()
-        
-        self.tabs.addTab(self.router_tab, "Router")
-        self.tabs.addTab(self.synth_tab, "Synth")
-        self.tabs.addTab(self.voices_tab, "Voices")
-        
-        # Create layouts for each tab
-        self.setup_router_tab()
-        self.setup_synth_tab()
-        self.setup_voices_tab()
-        
-        # Main layout
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.tabs)
-        self.setLayout(main_layout)
-        
-        # Start OSC listener for feedback
-        self.setup_osc_listener()
-        
-        # Add timer to refresh UI periodically
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.refresh_ui)
-        self.refresh_timer.start(1000)  # Refresh every second
+class ParameterDial(QWidget):
+    """A dial with a label for controlling synth parameters."""
     
-    def setup_router_tab(self):
-        """Setup the router control tab"""
-        layout = QGridLayout()
-        
-        # Router info section
-        row = 0
-        layout.addWidget(QLabel("Router Settings"), row, 0, 1, 2)
-        
-        # Synth Name
-        row += 1
-        layout.addWidget(QLabel("Synth Name:"), row, 0)
-        self.synth_name_combo = QComboBox()
-        self.synth_name_combo.addItems(["simple", "complex", "fm", "wavetable"])
-        self.synth_name_combo.currentTextChanged.connect(self.on_synth_name_changed)
-        layout.addWidget(self.synth_name_combo, row, 1)
-        
-        # Default Cutoff
-        row += 1
-        layout.addWidget(QLabel("Default Cutoff:"), row, 0)
-        self.cutoff_slider = QSlider(Qt.Orientation.Horizontal)
-        self.cutoff_slider.setRange(20, 20000)
-        self.cutoff_slider.setValue(1000)
-        self.cutoff_slider.setTracking(False)
-        self.cutoff_slider.valueChanged.connect(self.on_cutoff_changed)
-        layout.addWidget(self.cutoff_slider, row, 1)
-        self.cutoff_label = QLabel("1000 Hz")
-        layout.addWidget(self.cutoff_label, row, 2)
-        
-        # All Notes Off button
-        row += 1
-        all_notes_off_btn = QPushButton("All Notes Off")
-        all_notes_off_btn.clicked.connect(self.all_notes_off)
-        layout.addWidget(all_notes_off_btn, row, 0, 1, 2)
-        
-        # Status section
-        row += 1
-        layout.addWidget(QLabel("Status"), row, 0, 1, 2)
-        
-        # Active Notes
-        row += 1
-        layout.addWidget(QLabel("Active Notes:"), row, 0)
-        self.active_notes_label = QLabel("None")
-        layout.addWidget(self.active_notes_label, row, 1)
-        
-        # Sustained Notes
-        row += 1
-        layout.addWidget(QLabel("Sustained Notes:"), row, 0)
-        self.sustained_notes_label = QLabel("None")
-        layout.addWidget(self.sustained_notes_label, row, 1)
-        
-        # Voice Count
-        row += 1
-        layout.addWidget(QLabel("Voice Count:"), row, 0)
-        self.voice_count_label = QLabel("0")
-        layout.addWidget(self.voice_count_label, row, 1)
-        
-        # Set the layout
-        self.router_tab.setLayout(layout)
+    value_changed = Signal(str, float)
     
-    def setup_synth_tab(self):
-        """Setup the synth parameters tab"""
-        try:
-            # Load synth definition if available
-            # Get the directory where this script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            json_path = os.path.join(script_dir, "synth.dsp.json")
-            with open(json_path) as f:
-                synth_ui = json.load(f)
-            
-            layout = QVBoxLayout()
-            
-            # Process UI definition
-            for group in synth_ui.get("ui", []):
-                for item in group.get("items", []):
-                    ctrl_type = item["type"]
-                    label = item.get("label")
-                    address = item.get("meta", [{}])[0].get("osc", item.get("address"))
-                    
-                    # Skip gate and freq controls
-                    if label in ["gate", "freq"]:
-                        continue
-                    
-                    if ctrl_type == "hslider":
-                        self.add_dial(layout, label, address, item["init"], item["min"], item["max"])
-                    elif ctrl_type == "button":
-                        self.add_button(layout, label, address)
-        except Exception as e:
-            # If no synth definition, create some default controls
-            layout = QVBoxLayout()
-            layout.addWidget(QLabel(f"Error loading synth definition: {e}"))
-            layout.addWidget(QLabel("Using default controls"))
-            
-            # Add some default controls
-            self.add_dial(layout, "Gain", "/gain", 0.5, 0.0, 1.0)
-            self.add_dial(layout, "Attack", "/attack", 0.01, 0.001, 1.0)
-            self.add_dial(layout, "Release", "/release", 0.5, 0.001, 2.0)
-            self.add_dial(layout, "Cutoff", "/cutoff", 1000, 20, 20000)
-            self.add_dial(layout, "Resonance", "/resonance", 0.5, 0.0, 1.0)
+    def __init__(self, name, label, min_val=0, max_val=127, default=64, parent=None):
+        """Initialize the parameter dial."""
+        super().__init__(parent)
+        self.name = name
         
-        self.synth_tab.setLayout(layout)
-    
-    def setup_voices_tab(self):
-        """Setup the voices control tab"""
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
         
-        # Get voice count
-        osc.send_message("/router/get", "router/voices")
+        # Create label
+        self.label = QLabel(label)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.label)
         
-        # Create a placeholder - we'll populate this dynamically when we get data
-        self.voices_layout = QGridLayout()
-        voice_container = QWidget()
-        voice_container.setLayout(self.voices_layout)
-        
-        layout.addWidget(QLabel("Voice Status"))
-        layout.addWidget(voice_container)
-        
-        self.voices_tab.setLayout(layout)
-    
-    def setup_voice_controls(self, voice_count):
-        """Setup voice status displays"""
-        # Clear existing widgets
-        for i in reversed(range(self.voices_layout.count())): 
-            self.voices_layout.itemAt(i).widget().setParent(None)
-        
-        # Create headers
-        self.voices_layout.addWidget(QLabel("Voice"), 0, 0)
-        self.voices_layout.addWidget(QLabel("Note"), 0, 1)
-        self.voices_layout.addWidget(QLabel("Active"), 0, 2)
-        self.voices_layout.addWidget(QLabel("Reset"), 0, 3)
-        
-        # Create voice status rows
-        self.voice_status_labels = []
-        self.voice_note_labels = []
-        self.voice_active_labels = []
-        
-        for i in range(voice_count):
-            # Voice ID
-            self.voices_layout.addWidget(QLabel(f"{i}"), i+1, 0)
-            
-            # Note
-            note_label = QLabel("-")
-            self.voice_note_labels.append(note_label)
-            self.voices_layout.addWidget(note_label, i+1, 1)
-            
-            # Active status
-            active_label = QLabel("No")
-            self.voice_active_labels.append(active_label)
-            self.voices_layout.addWidget(active_label, i+1, 2)
-            
-            # Reset button
-            reset_btn = QPushButton("Reset")
-            reset_btn.clicked.connect(lambda checked, idx=i: self.reset_voice(idx))
-            self.voices_layout.addWidget(reset_btn, i+1, 3)
-    
-    def add_dial(self, layout, name, address, init, min_val, max_val):
-        """Add a control dial to the UI"""
-        container = QVBoxLayout()
-        label = QLabel(name)
-        label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        # Create dial
+        self.dial = QDial()
+        self.dial.setMinimum(min_val)
+        self.dial.setMaximum(max_val)
+        self.dial.setValue(default)
+        self.dial.valueChanged.connect(self._value_changed)
+        layout.addWidget(self.dial)
         
         # Create value label
-        value_label = QLabel(f"{init}")
-        value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.value_label = QLabel(str(default))
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.value_label)
         
-        dial = QDial()
-        dial.setMinimum(0)
-        dial.setMaximum(1000)
-        dial.setValue(int((init - min_val) / (max_val - min_val) * 1000))
+    def _value_changed(self, value):
+        """Handle dial value changed."""
+        self.value_label.setText(str(value))
+        # Normalize value to 0-1 range for OSC
+        normalized = value / (self.dial.maximum() - self.dial.minimum())
+        self.value_changed.emit(self.name, normalized)
         
-        # Store min/max for scaling
-        dial.min_val = min_val
-        dial.max_val = max_val
-        dial.address = address
-        dial.value_label = value_label
-        
-        dial.valueChanged.connect(
-            lambda val, dial=dial: self.on_dial_changed(dial, val)
-        )
-        
-        container.addWidget(label)
-        container.addWidget(dial, alignment=Qt.AlignmentFlag.AlignHCenter)
-        container.addWidget(value_label)
-        
-        layout.addLayout(container)
+    def set_value(self, value):
+        """Set the dial value."""
+        # Scale value from 0-1 to dial range
+        scaled = int(value * (self.dial.maximum() - self.dial.minimum()))
+        self.dial.setValue(scaled)
+
+class SimpleSynthUI(QWidget):
+    """Main widget for the Simple Mono synth UI."""
     
-    def on_dial_changed(self, dial, val):
-        """Handle dial value changes"""
-        # Scale value from 0-1000 to min-max
-        scaled_val = dial.min_val + (val / 1000) * (dial.max_val - dial.min_val)
+    def __init__(self, parent=None):
+        """Initialize the UI."""
+        super().__init__(parent)
         
-        # Update label
-        if dial.max_val >= 100:
-            # Format large numbers without decimal places
-            dial.value_label.setText(f"{int(scaled_val)}")
-        else:
-            # Format small numbers with 2 decimal places
-            dial.value_label.setText(f"{scaled_val:.2f}")
+        # Create OSC client for communicating with the router
+        self.osc_client = udp_client.SimpleUDPClient(OSC_IP, OSC_PORT)
         
-        # Send to all voices via router
-        self.send_to_all_voices(dial.address, scaled_val)
-    
-    def add_button(self, layout, name, address):
-        """Add a button control to the UI"""
-        button = QPushButton(name)
-        button.setCheckable(True)
-        button.clicked.connect(lambda checked, a=address: self.send_to_all_voices(a, 1.0 if checked else 0.0))
-        layout.addWidget(button)
-    
-    def on_synth_name_changed(self, name):
-        """Handle synth name changes"""
-        osc.send_message("/router/synth_name", name)
-    
-    def on_cutoff_changed(self, value):
-        """Handle cutoff slider changes"""
-        # Update UI
-        self.cutoff_label.setText(f"{value} Hz")
+        # Create main layout
+        main_layout = QVBoxLayout(self)
         
-        # Send to router using proper format
-        osc.send_message("/router/default_cutoff", float(value))
+        # Add title
+        title_label = QLabel("Simple Mono Synth")
+        title_font = QFont()
+        title_font.setPointSize(24)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(title_label)
         
-        # Also send to all voices as a parameter
-        self.send_to_all_voices("cutoff", float(value))
-    
-    def all_notes_off(self):
-        """Send all notes off message"""
-        # This will be handled by a special OSC endpoint in the router
-        osc.send_message("/router/all_notes_off", 1)
-    
-    def reset_voice(self, voice_idx):
-        """Reset a specific voice"""
-        # Send the voice index as an argument
-        osc.send_message("/router/voice/reset", int(voice_idx))
-    
-    def send_to_all_voices(self, path, value):
-        """Send a parameter to all active voices"""
-        # Extract parameter name from path
-        param_name = path.split('/')[-1]
+        # Create oscillator section
+        osc_group = QGroupBox("Oscillator")
+        osc_layout = QHBoxLayout()
         
-        # Send using the proper format for param_all endpoint: [param_name, value]
-        LOG.info(f"Sending parameter {param_name} = {value} to all voices")
-        osc.send_message("/router/param_all", [param_name, float(value)])
+        # Create oscillator parameters
+        self.waveform_dial = ParameterDial("waveform", "Waveform", 0, 3, 0)
+        self.detune_dial = ParameterDial("detune", "Detune", 0, 100, 0)
+        self.octave_dial = ParameterDial("octave", "Octave", -2, 2, 0)
         
-        # Also try direct parameter path for backward compatibility
-        if not path.startswith("/"):
-            path = "/" + path
-        LOG.debug(f"Also sending to direct path: {path} = {value}")
-        osc.send_message(path, float(value))
+        # Connect parameter signals
+        self.waveform_dial.value_changed.connect(self.parameter_changed)
+        self.detune_dial.value_changed.connect(self.parameter_changed)
+        self.octave_dial.value_changed.connect(self.parameter_changed)
+        
+        # Add parameters to layout
+        osc_layout.addWidget(self.waveform_dial)
+        osc_layout.addWidget(self.detune_dial)
+        osc_layout.addWidget(self.octave_dial)
+        osc_group.setLayout(osc_layout)
+        main_layout.addWidget(osc_group)
+        
+        # Create filter section
+        filter_group = QGroupBox("Filter")
+        filter_layout = QHBoxLayout()
+        
+        # Create filter parameters
+        self.cutoff_dial = ParameterDial("cutoff", "Cutoff", 0, 127, 100)
+        self.resonance_dial = ParameterDial("resonance", "Resonance", 0, 127, 0)
+        self.env_amount_dial = ParameterDial("env_amount", "Env Amount", 0, 127, 100)
+        
+        # Connect parameter signals
+        self.cutoff_dial.value_changed.connect(self.parameter_changed)
+        self.resonance_dial.value_changed.connect(self.parameter_changed)
+        self.env_amount_dial.value_changed.connect(self.parameter_changed)
+        
+        # Add parameters to layout
+        filter_layout.addWidget(self.cutoff_dial)
+        filter_layout.addWidget(self.resonance_dial)
+        filter_layout.addWidget(self.env_amount_dial)
+        filter_group.setLayout(filter_layout)
+        main_layout.addWidget(filter_group)
+        
+        # Create envelope section
+        env_group = QGroupBox("Envelope")
+        env_layout = QHBoxLayout()
+        
+        # Create envelope parameters
+        self.attack_dial = ParameterDial("attack", "Attack", 0, 127, 10)
+        self.decay_dial = ParameterDial("decay", "Decay", 0, 127, 30)
+        self.sustain_dial = ParameterDial("sustain", "Sustain", 0, 127, 100)
+        self.release_dial = ParameterDial("release", "Release", 0, 127, 50)
+        
+        # Connect parameter signals
+        self.attack_dial.value_changed.connect(self.parameter_changed)
+        self.decay_dial.value_changed.connect(self.parameter_changed)
+        self.sustain_dial.value_changed.connect(self.parameter_changed)
+        self.release_dial.value_changed.connect(self.parameter_changed)
+        
+        # Add parameters to layout
+        env_layout.addWidget(self.attack_dial)
+        env_layout.addWidget(self.decay_dial)
+        env_layout.addWidget(self.sustain_dial)
+        env_layout.addWidget(self.release_dial)
+        env_group.setLayout(env_layout)
+        main_layout.addWidget(env_group)
+        
+        # Create panic button section
+        panic_layout = QHBoxLayout()
+        self.panic_button = QPushButton("PANIC")
+        self.panic_button.setStyleSheet("background-color: #550000; color: white; font-weight: bold; padding: 10px;")
+        self.panic_button.clicked.connect(self.send_panic)
+        panic_layout.addWidget(self.panic_button)
+        main_layout.addLayout(panic_layout)
     
-    def setup_osc_listener(self):
-        """Setup OSC listener for feedback from the router"""
-        self.dispatcher = Dispatcher()
-        # Add handler for router value responses
-        self.dispatcher.map("/router/value/*", self.handle_router_value)
-        
-        # Start the OSC server
+    def parameter_changed(self, name, value):
+        """Handle parameter value changed."""
+        LOG.info(f"Parameter changed: {name} = {value}")
         try:
-            self.server = BlockingOSCUDPServer(("127.0.0.1", OSC_UI_PORT), self.dispatcher)
-            server_thread = threading.Thread(target=self.server.serve_forever)
-            server_thread.daemon = True
-            server_thread.start()
-            print(f"OSC listening on port {OSC_UI_PORT}")
+            # Send parameter to router
+            self.osc_client.send_message(f"/{ROUTER_NAME}/param", [name, value])
         except Exception as e:
-            print(f"Error starting OSC server: {e}")
+            LOG.error(f"Error sending parameter: {e}")
     
-    def handle_router_value(self, address, *args):
-        """Handle value responses from the router"""
-        if len(args) < 1:
-            return
-            
-        # Parse the address to determine what to update
-        parts = address.split('/')
-        if len(parts) < 4:
-            return
-            
-        var_path = '/'.join(parts[3:])
-        value = args[0]
-        
-        # Update UI based on received values
-        if var_path == "voice_manager/active_notes":
-            try:
-                notes = json.loads(value)
-                self.active_notes_label.setText(", ".join(map(str, notes)) if notes else "None")
-            except:
-                self.active_notes_label.setText(str(value))
-                
-        elif var_path == "voice_manager/sustained_notes":
-            try:
-                notes = json.loads(value)
-                self.sustained_notes_label.setText(", ".join(map(str, notes)) if notes else "None")
-            except:
-                self.sustained_notes_label.setText(str(value))
-                
-        elif var_path == "router/voices":
-            self.voice_count_label.setText(str(value))
-            # Setup voice controls based on count
-            self.setup_voice_controls(int(value))
-            
-        # Handle voice status updates
-        elif var_path.startswith("voice/") and var_path.endswith("/note"):
-            try:
-                parts = var_path.split('/')
-                if len(parts) >= 3:
-                    voice_idx = int(parts[1])
-                    if voice_idx < len(self.voice_note_labels):
-                        note_val = int(float(value))
-                        self.voice_note_labels[voice_idx].setText(str(note_val) if note_val >= 0 else "-")
-            except:
-                pass
-                
-        elif var_path.startswith("voice/") and var_path.endswith("/is_active"):
-            try:
-                parts = var_path.split('/')
-                if len(parts) >= 3:
-                    voice_idx = int(parts[1])
-                    if voice_idx < len(self.voice_active_labels):
-                        is_active = float(value) > 0.5
-                        self.voice_active_labels[voice_idx].setText("Yes" if is_active else "No")
-            except:
-                pass
-    
-    def refresh_ui(self):
-        """Refresh UI with current router state"""
-        # Request router state
-        osc.send_message("/router/get", "voice_manager/active_notes")
-        osc.send_message("/router/get", "voice_manager/sustained_notes")
-        osc.send_message("/router/get", "router/voices")
-        
-        # Request voice status for each voice
-        voice_count = 4  # Assume at least 4 voices
-        for i in range(voice_count):
-            osc.send_message("/router/get", f"voice/{i}/note")
-            osc.send_message("/router/get", f"voice/{i}/is_active")
+    def send_panic(self):
+        """Send panic (all notes off) message to router."""
+        LOG.info("Sending panic message")
+        try:
+            self.osc_client.send_message(f"/{ROUTER_NAME}/all_notes_off", [])
+        except Exception as e:
+            LOG.error(f"Error sending panic message: {e}")
 
-# Add new OSC handler for the router
-def handle_param_to_all_voices(self, address, *args):
-    """Handle sending a parameter to all voices"""
-    if len(args) < 1:
-        return
+def create_ui_widget(parent=None):
+    """
+    Create the UI widget for embedding in the main launcher.
     
-    param_name = address.split('/')[-1]
-    value = float(args[0])
-    
-    # Get all active voices
-    osc.send_message("/router/get", "voice_manager/active_notes")
-    # The response will come back with active notes, but we need to send immediately
-    
-    # For now, send to first 8 voices (safe assumption)
-    for i in range(8):
-        osc.send_message(f"/router/voice/{i}/param", param_name)
-        osc.send_message(f"/router/voice/{i}/param_value", value)
+    Args:
+        parent: Optional parent widget
+        
+    Returns:
+        The synth UI widget
+    """
+    try:
+        LOG.info("Creating Simple Mono Synth UI widget")
+        return SimpleSynthUI(parent)
+    except Exception as e:
+        LOG.error(f"Error creating synth UI widget: {e}")
+        import traceback
+        traceback.print_exc()
+        # Create a fallback widget with error message
+        fallback = QWidget(parent)
+        layout = QVBoxLayout(fallback)
+        error_label = QLabel(f"Error loading synth UI: {str(e)}")
+        error_label.setStyleSheet("color: red;")
+        layout.addWidget(error_label)
+        return fallback
 
-# --- Launch ---
-if __name__ == "__main__":
+class StandaloneSynthUI(QMainWindow):
+    """Standalone window for running the synth UI independently."""
+    
+    def __init__(self):
+        """Initialize the standalone UI."""
+        super().__init__()
+        
+        # Set window properties
+        self.setWindowTitle("Simple Mono Synth")
+        self.resize(2224, 1668)  # iPad dimensions
+        
+        # Create central widget
+        central_widget = create_ui_widget()
+        self.setCentralWidget(central_widget)
+        
+        # Add status bar
+        self.statusBar().showMessage("Synth UI ready")
+
+def main():
+    """Main entry point for the synth UI when run standalone."""
     app = QApplication(sys.argv)
-    panel = SynthControlPanel()
-    panel.resize(600, 800)
-    panel.show()
-    sys.exit(app.exec())
+    
+    # Set custom app icon if available - use try/except to handle failures
+    try:
+        set_app_icon(app)
+    except Exception as e:
+        LOG.warning(f"Could not set app icon: {e}")
+    
+    # Create and show the standalone UI
+    window = StandaloneSynthUI()
+    window.show()
+    
+    # Enter the application main loop
+    return app.exec() if hasattr(app, 'exec') else app.exec_()
+
+if __name__ == "__main__":
+    sys.exit(main())
 

@@ -7,9 +7,7 @@ This module provides classes for routing OSC messages to multiple synth voices:
 - VariableManager: Handles getting/setting router variables
 - OSCRouter: Main router class that ties everything together
 """
-import json
-import yaml
-from typing import Dict, List, Optional, Any, Union, Callable, Tuple
+from typing import Dict, List, Optional, Any, Tuple
 
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
@@ -18,285 +16,9 @@ from pythonosc import udp_client
 from lib.common.utils import LOG, DEFAULT_ROUTER_PORT, DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME
 from lib.osc_bridge.voice import Voice
 from lib.osc_bridge.voice_manager import VoiceManager
-
-
-class ConfigLoader:
-    """
-    Loads and parses configuration for the OSC Router.
-    """
-    
-    @staticmethod
-    def load_config(config_file: str) -> Tuple[Dict[str, Any], List[Voice]]:
-        """
-        Load configuration from YAML or JSON file.
-        
-        Args:
-            config_file: Path to configuration file
-            
-        Returns:
-            Tuple containing (settings dict, list of Voice objects)
-            
-        Raises:
-            Exception: If loading or parsing the config file fails
-        """
-        try:
-            # Open and parse the file
-            with open(config_file, 'r') as f:
-                if config_file.endswith('.yaml') or config_file.endswith('.yml'):
-                    config = yaml.safe_load(f)
-                else:
-                    config = json.load(f)
-            
-            # Extract global settings
-            settings = {
-                'synth_name': DEFAULT_SYNTH_NAME,
-                'synth_host': DEFAULT_SYNTH_HOST,
-            }
-            
-            if 'settings' in config:
-                if 'synth_host' in config['settings']:
-                    settings['synth_host'] = config['settings']['synth_host']
-                if 'synth_name' in config['settings']:
-                    settings['synth_name'] = config['settings']['synth_name']
-            
-            # Create voice objects
-            voices = []
-            if 'voices' in config:
-                for voice_config in config['voices']:
-                    voice_id = voice_config['id']
-                    port = voice_config['port']
-                    # Use voice-specific host if provided, fall back to default
-                    host = voice_config.get('host', settings['synth_host'])
-                    # Create voice with the synth name and host
-                    voice = Voice(voice_id, port, host=host, synth_name=settings['synth_name'])
-                    voices.append(voice)
-            
-            return settings, voices
-            
-        except Exception as e:
-            LOG.error(f"Error loading config: {e}")
-            raise
-
-
-class UIBridge:
-    """
-    Manages bidirectional communication with UI clients via OSC.
-    
-    This class handles both:
-    1. Sending updates TO UIs (outbound: params, status, etc.)
-    2. Receiving commands FROM UIs (inbound: UI registration)
-    
-    It's like a digital switchboard connecting the router and UI,
-    ensuring they're always on speaking terms.
-    """
-    
-    def __init__(self) -> None:
-        """Initialize the bidirectional UI bridge."""
-        # Outbound communication details (router → UI)
-        self.ui_host: Optional[str] = None
-        self.ui_port: Optional[int] = None
-        self.ui_client: Optional[udp_client.SimpleUDPClient] = None
-        
-        # Inbound handlers are registered in the main OSCRouter class
-        # with the dispatcher.map() method
-    
-    def setup_client(self, host: str, port: int) -> bool:
-        """
-        Set up OSC client for sending messages TO the UI.
-        
-        This establishes the outbound channel from router to UI.
-        For inbound messages (UI → router), see handle_register_ui()
-        in the OSCRouter class.
-        
-        Args:
-            host: UI host address
-            port: UI port number
-            
-        Returns:
-            True if setup was successful
-        """
-        try:
-            port = int(port)
-            self.ui_host = host
-            self.ui_port = port
-            self.ui_client = udp_client.SimpleUDPClient(host, port)
-            LOG.info(f"Set up UI feedback to {host}:{port}")
-            # Send test message to confirm connection
-            self.send_status("info", "Connected to OSC router")
-            return True
-        except Exception as e:
-            LOG.error(f"Error setting up UI client: {e}")
-            return False
-    
-    def send_status(self, status_type: str, message: str) -> bool:
-        """
-        Send status message TO UI (outbound).
-        
-        Args:
-            status_type: Type of status (info, warning, error)
-            message: Status message
-            
-        Returns:
-            True if message was sent successfully
-        """
-        if self.ui_client:
-            try:
-                self.ui_client.send_message("/ui/status", [status_type, message])
-                LOG.debug(f"Sent UI status: {status_type} - {message}")
-                return True
-            except Exception as e:
-                LOG.error(f"Error sending UI status: {e}")
-        return False
-    
-    def send_param(self, param_name: str, value: Any) -> bool:
-        """
-        Send parameter update TO UI (outbound).
-        
-        Args:
-            param_name: Parameter name
-            value: Parameter value
-            
-        Returns:
-            True if message was sent successfully
-        """
-        if self.ui_client:
-            try:
-                self.ui_client.send_message("/ui/param", [param_name, value])
-                LOG.debug(f"Sent UI param: {param_name} = {value}")
-                return True
-            except Exception as e:
-                LOG.error(f"Error sending UI param: {e}")
-        return False
-
-
-class VariableManager:
-    """
-    Manages getting and setting of router variables.
-    """
-    
-    def __init__(self, router: 'OSCRouter') -> None:
-        """
-        Initialize the variable manager.
-        
-        Args:
-            router: Reference to the parent OSCRouter
-        """
-        self.router = router
-    
-    def set_variable(self, var_path: str, value: Any) -> bool:
-        """
-        Set a router variable by path.
-        
-        Args:
-            var_path: Variable path (e.g., 'voice_manager.default_cutoff')
-            value: Value to set
-            
-        Returns:
-            True if variable was set successfully
-        """
-        try:
-            # Handle nested paths
-            parts = var_path.split('.')
-            
-            # Start with the router object
-            obj = self.router
-            
-            # Navigate through the path except the final part
-            for part in parts[:-1]:
-                if hasattr(obj, part):
-                    obj = getattr(obj, part)
-                else:
-                    LOG.error(f"Path not found: {var_path}")
-                    return False
-            
-            # Set the final attribute
-            final_attr = parts[-1]
-            if hasattr(obj, final_attr):
-                # Convert value to appropriate type if possible
-                current_value = getattr(obj, final_attr)
-                new_value = self._convert_value(value, type(current_value))
-                
-                # Set the new value
-                setattr(obj, final_attr, new_value)
-                LOG.info(f"Set {var_path} = {new_value}")
-                
-                # Special handling for cutoff
-                if var_path == 'voice_manager.default_cutoff':
-                    self.router.voice_manager._update_filter_cutoff()
-                
-                return True
-            else:
-                LOG.error(f"Attribute not found: {final_attr}")
-                return False
-                
-        except Exception as e:
-            LOG.error(f"Error setting variable {var_path}: {e}")
-            return False
-    
-    def get_variable(self, var_path: str) -> Optional[Any]:
-        """
-        Get a router variable by path.
-        
-        Args:
-            var_path: Variable path (e.g., 'voice_manager.default_cutoff')
-            
-        Returns:
-            Variable value if found, None otherwise
-        """
-        try:
-            # Handle nested paths
-            parts = var_path.split('.')
-            
-            # Start with the router object
-            obj = self.router
-            
-            # Navigate through the path
-            for part in parts:
-                if hasattr(obj, part):
-                    obj = getattr(obj, part)
-                else:
-                    LOG.error(f"Path not found: {var_path}")
-                    return None
-            
-            LOG.info(f"Get {var_path} = {obj}")
-            return obj
-                
-        except Exception as e:
-            LOG.error(f"Error getting variable {var_path}: {e}")
-            return None
-    
-    def _convert_value(self, value: Any, target_type: type) -> Any:
-        """
-        Convert a value to the target type.
-        
-        Args:
-            value: Value to convert
-            target_type: Target type
-            
-        Returns:
-            Converted value
-        """
-        try:
-            # If value is already the correct type, return it
-            if isinstance(value, target_type):
-                return value
-                
-            # Handle common conversions
-            if target_type == int:
-                return int(value)
-            elif target_type == float:
-                return float(value)
-            elif target_type == bool:
-                if isinstance(value, str):
-                    return value.lower() in ('true', 'yes', '1')
-                else:
-                    return bool(value)
-            else:
-                # Default to string if no specific conversion
-                return str(value)
-        except Exception as e:
-            LOG.error(f"Error converting value {value} to {target_type}: {e}")
-            return value  # Return original value if conversion fails
+from lib.osc_bridge.config_loader import ConfigLoader
+from lib.osc_bridge.ui_bridge import UIBridge
+from lib.osc_bridge.variable_manager import VariableManager
 
 
 class OSCRouter:
@@ -351,8 +73,10 @@ class OSCRouter:
         # Create OSC dispatcher for handling INBOUND messages
         self.dispatcher: Dispatcher = Dispatcher()
         
-        # Add default handlers for all the types of INBOUND messages we can receive
-        self.add_default_handlers()
+        # Register OSC handlers via controller classes
+        from lib.osc_bridge.controllers import CONTROLLERS
+        for controller in CONTROLLERS:
+            controller(self, self.dispatcher)
         
         # Load config if provided
         if config_file:
@@ -435,48 +159,6 @@ class OSCRouter:
             if self.ui_bridge.ui_client:
                 self.send_ui_status("error", f"Failed to load config: {str(e)}")
             return False
-    
-    def add_default_handlers(self) -> None:
-        """Add OSC message handlers to the dispatcher."""
-        # Main handlers for router control
-        self.dispatcher.map("/router/note_on", self.handle_note_on)
-        self.dispatcher.map("/router/note_off", self.handle_note_off)
-        self.dispatcher.map("/router/sustain", self.handle_sustain)
-        self.dispatcher.map("/router/cc", self.handle_cc)
-        self.dispatcher.map("/router/pitch_bend", self.handle_pitch_bend)
-        self.dispatcher.map("/router/aftertouch", self.handle_aftertouch)
-        self.dispatcher.map("/router/poly_aftertouch", self.handle_poly_aftertouch)
-        
-        # Variable control handlers
-        self.dispatcher.map("/router/set", self.handle_set_variable)
-        self.dispatcher.map("/router/get", self.handle_get_variable)
-        
-        # Direct variable endpoint mappings
-        self.dispatcher.map("/router/default_cutoff", self.handle_default_cutoff)
-        self.dispatcher.map("/router/synth_name", self.handle_synth_name)
-        self.dispatcher.map("/router/synth_host", self.handle_synth_host)
-        
-        # All notes off
-        self.dispatcher.map("/router/all_notes_off", self.handle_all_notes_off)
-        
-        # Parameter handling
-        self.dispatcher.map("/router/param", self.handle_param_all_voices)
-        
-        # Direct parameter access
-        self.dispatcher.map("/cutoff", self.forward_param_to_voices)
-        self.dispatcher.map("/resonance", self.forward_param_to_voices)
-        self.dispatcher.map("/gain", self.forward_param_to_voices)
-        self.dispatcher.map("/attack", self.forward_param_to_voices)
-        self.dispatcher.map("/release", self.forward_param_to_voices)
-        
-        # Voice reset
-        self.dispatcher.map("/router/voice/reset", self.handle_voice_reset)
-        
-        # UI client registration
-        self.dispatcher.map("/router/register_ui", self.handle_register_ui)
-        
-        # Add a wildcard handler for debugging
-        self.dispatcher.map("/*", self.handle_wildcard)
     
     def handle_register_ui(self, address: str, *args: Any) -> None:
         """
@@ -808,6 +490,10 @@ class OSCRouter:
             address: OSC address
             *args: OSC arguments
         """
+        # Skip UI feedback messages to avoid creating feedback loops or encoding errors
+        if address.startswith('/ui/status') or address.startswith('/ui/param'):
+            return
+            
         if not address.startswith('/router/'):
             LOG.debug(f"Received unhandled OSC: {address} {args}")
         elif '/router/get' not in address and '/router/value' not in address:
@@ -888,8 +574,6 @@ class OSCRouter:
         
         # Send to UI
         self.send_ui_param(param_name, value)
-        
-        return True
     
     def handle_voice_reset(self, address: str, *args: Any) -> None:
         """
@@ -949,16 +633,31 @@ class OSCRouter:
         
         return True
     
-    def run(self) -> None:
+    def start_in_background(self) -> None:
         """
-        Start the OSC router's main INBOUND listening server.
+        Start the OSC router in a background thread.
         
-        This starts the server that receives all incoming OSC messages
-        from MIDI bridges, UIs, and other OSC sources.
+        This allows the router to run asynchronously without blocking the
+        main application thread.
         """
+        import threading
+        
+        # Initialize server object
+        self.server = None
+        
+        # Flag to indicate if the server should keep running
+        self.running = True
+        
+        # Create and start background thread
+        self.server_thread = threading.Thread(target=self._run_in_thread, daemon=True)
+        self.server_thread.start()
+        LOG.info(f"OSC Router started in background thread on port {self.router_port}")
+        
+    def _run_in_thread(self) -> None:
+        """Internal method to run the server in a background thread."""
         try:
             # Create and start OSC server for INBOUND messages
-            server = ThreadingOSCUDPServer(("0.0.0.0", self.router_port), self.dispatcher)
+            self.server = ThreadingOSCUDPServer(("0.0.0.0", self.router_port), self.dispatcher)
             LOG.info(f"OSC Router listening on 0.0.0.0:{self.router_port}")
             LOG.info(f"Routing to {len(self.voice_manager.voices)} synth voices")
             
@@ -966,19 +665,42 @@ class OSCRouter:
             for i, voice in enumerate(self.voice_manager.voices):
                 LOG.info(f"Voice {i}: {voice.id} on {voice.host}:{voice.port}")
             
-            # Store server reference
-            self.server = server
-            
-            # Serve forever - keep listening for INBOUND messages
-            server.serve_forever()
-        except KeyboardInterrupt:
-            LOG.info("\nOSC Router stopped.")
+            # Custom serve forever that can be stopped
+            while self.running:
+                self.server.handle_request()
+                
         except Exception as e:
-            LOG.error(f"Error starting server: {e}")
+            LOG.error(f"Error in router thread: {e}")
             
             # Send to UI (OUTBOUND)
             if self.ui_bridge.ui_client:
-                self.send_ui_status("error", f"Router error: {str(e)}")
+                self.send_ui_status("error", f"Router thread error: {str(e)}")
+    
+    def stop(self) -> None:
+        """
+        Stop the OSC router gracefully.
+        
+        This stops the background thread and cleans up resources.
+        """
+        self.running = False
+        
+        # Close server socket if it exists
+        if hasattr(self, 'server') and self.server:
+            try:
+                LOG.info("Closing OSC router server socket")
+                self.server.server_close()
+            except Exception as e:
+                LOG.error(f"Error closing server socket: {e}")
+        
+        # Send all notes off message to voices
+        if hasattr(self, 'voice_manager'):
+            try:
+                LOG.info("Sending all notes off to all voices")
+                self.handle_all_notes_off("/all_notes_off")
+            except Exception as e:
+                LOG.error(f"Error sending all notes off: {e}")
+                
+        LOG.info("OSC Router stopped")
 
     def set_variable(self, var_path: str, value: Any) -> bool:
         """
@@ -1005,20 +727,17 @@ class OSCRouter:
         """
         return self.variable_manager.get_variable(var_path)
 
-    def forward_param_to_voices(self, address: str, *args: Any) -> bool:
+    def forward_param_to_voices(self, address: str, *args: Any) -> None:
         """
         Directly forward parameters to all voices.
         
         Args:
             address: OSC address
             *args: OSC arguments (value)
-            
-        Returns:
-            True if parameters were forwarded successfully
         """
         if len(args) < 1:
             LOG.warning(f"Invalid parameter message, need value: {args}")
-            return False
+            return
         
         value = float(args[0])
         
@@ -1038,4 +757,37 @@ class OSCRouter:
         # This ensures both the main UI and any separate UI components get updated
         self.handle_param_all_voices(address, param_name, value)
         
-        return True 
+        # Don't return anything (None by default)
+
+    def run(self) -> None:
+        """
+        Start the OSC router's main INBOUND listening server.
+        
+        This starts the server that receives all incoming OSC messages
+        from MIDI bridges, UIs, and other OSC sources.
+        
+        Note: For non-blocking operation, use start_in_background() instead.
+        """
+        try:
+            # Create and start OSC server for INBOUND messages
+            server = ThreadingOSCUDPServer(("0.0.0.0", self.router_port), self.dispatcher)
+            LOG.info(f"OSC Router listening on 0.0.0.0:{self.router_port}")
+            LOG.info(f"Routing to {len(self.voice_manager.voices)} synth voices")
+            
+            # Print voice details
+            for i, voice in enumerate(self.voice_manager.voices):
+                LOG.info(f"Voice {i}: {voice.id} on {voice.host}:{voice.port}")
+            
+            # Store server reference
+            self.server = server
+            
+            # Serve forever - keep listening for INBOUND messages
+            server.serve_forever()
+        except KeyboardInterrupt:
+            LOG.info("\nOSC Router stopped.")
+        except Exception as e:
+            LOG.error(f"Error starting server: {e}")
+            
+            # Send to UI (OUTBOUND)
+            if self.ui_bridge.ui_client:
+                self.send_ui_status("error", f"Router error: {str(e)}") 
