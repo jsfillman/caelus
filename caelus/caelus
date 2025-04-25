@@ -14,6 +14,8 @@ import sys
 import time
 import signal
 import argparse
+import subprocess
+import atexit
 from typing import Optional, List, Dict, Any
 
 from PyQt6.QtWidgets import (
@@ -39,6 +41,38 @@ DEFAULT_BANK = "00 - Simple Mono"
 SPLASH_IMAGE = "Caelus.png"
 APP_ICON = "CaelusAppIcon.png"
 
+def kill_synth_processes(processes):
+    """
+    Forcibly kill all synth processes.
+    
+    Args:
+        processes: List of subprocess.Popen instances to kill
+    """
+    from lib.midi_osc.helpers import kill_all_processes
+    
+    # First try to kill through normal helpers
+    kill_all_processes()
+    
+    # Then forcibly terminate remaining processes
+    if processes:
+        for proc in processes:
+            try:
+                if proc.poll() is None:  # Process is still running
+                    LOG.info(f"Killing synth process PID: {proc.pid}")
+                    proc.terminate()
+                    
+                    # Give it a second to terminate gracefully
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        # Force kill if it didn't terminate in time
+                        LOG.info(f"Force killing process PID: {proc.pid}")
+                        proc.kill()
+            except Exception as e:
+                LOG.error(f"Error killing process: {e}")
+                
+    LOG.info("All synth processes killed")
+
 class CaelusLauncher:
     """Main launcher for the Caelus synthesizer system."""
     
@@ -46,6 +80,10 @@ class CaelusLauncher:
         """Initialize the launcher with command line arguments."""
         self.args = args
         self.app = QApplication(sys.argv)
+        self.synth_processes = []
+        
+        # Register the cleanup handler for when the application exits
+        atexit.register(lambda: kill_synth_processes(self.synth_processes))
         
         # Set application icon for macOS dock
         if os.path.exists(APP_ICON):
@@ -110,16 +148,43 @@ class CaelusLauncher:
                               Qt.GlobalColor.white)
         self.app.processEvents()
         
-        # Create router instance
-        self.router = OSCRouter(
-            router_port=self.args.port,
-            ui_host="127.0.0.1", 
-            ui_port=self.args.ui_port
-        )
+        # First load the default bank configuration to get the voices.yaml file
+        from lib.common.bank_manager import BankManager
         
-        # Start router in a separate thread
-        self.router.start_in_background()
-        time.sleep(0.5)  # Give router time to initialize
+        bank_manager = BankManager(self.args.presets)
+        
+        try:
+            # Load the default bank configuration
+            bank_config = bank_manager.load_bank(DEFAULT_BANK)
+            voices_file = bank_config['voices_file']
+            
+            LOG.info(f"Loaded bank configuration from {voices_file}")
+            
+            # Create router instance with the voices configuration
+            self.router = OSCRouter(
+                config_file=voices_file,
+                router_port=self.args.port,
+                ui_host="127.0.0.1", 
+                ui_port=self.args.ui_port
+            )
+            
+            # Start router in a separate thread
+            self.router.start_in_background()
+            time.sleep(0.5)  # Give router time to initialize
+            
+            # Launch synth processes for the default bank
+            self.launch_synths(bank_config)
+            
+        except Exception as e:
+            LOG.error(f"Error starting router with default bank: {e}")
+            # Create router without config - will have no voices
+            self.router = OSCRouter(
+                router_port=self.args.port,
+                ui_host="127.0.0.1", 
+                ui_port=self.args.ui_port
+            )
+            self.router.start_in_background()
+            time.sleep(0.5)  # Give router time to initialize
     
     def start_gui(self) -> None:
         """Start the Launcher GUI with auto-selection of first interface and default bank."""
@@ -251,7 +316,100 @@ class CaelusLauncher:
         """Check if all synth voices are connected and update UI accordingly."""
         if self.gui and hasattr(self.gui, "check_synth_connectivity"):
             self.gui.check_synth_connectivity()
+    
+    def launch_synths(self, bank_config: dict) -> None:
+        """
+        Launch synth processes for each voice in the config.
+        
+        Args:
+            bank_config: Configuration from a loaded bank
+        """
+        import subprocess
+        import threading
+        from lib.midi_osc.helpers import monitor_process_output
+        
+        synth_path = bank_config['synth_file']
+        voices_config = bank_config['config']
+        synth_count = 0
+        
+        if not hasattr(self, 'synth_processes'):
+            self.synth_processes = []
             
+        default_host = voices_config.get('settings', {}).get('synth_host', '127.0.0.1')
+        
+        # Track which synths we've already processed to avoid duplicates
+        processed_synths = set()
+        
+        for voice in voices_config.get('voices', []):
+            host = voice.get('host', default_host)
+            port = voice.get('port')
+            vid = voice.get('id')
+            
+            # Skip remote synths
+            if host not in ('127.0.0.1', 'localhost'):
+                LOG.info(f"Skipping remote synth {vid} at {host}:{port}")
+                continue
+                
+            # Skip duplicate port/host combinations
+            synth_key = f"{host}:{port}"
+            if synth_key in processed_synths:
+                LOG.info(f"Skipping duplicate synth definition: {synth_key}")
+                continue
+                
+            processed_synths.add(synth_key)
+            
+            # Update splash screen
+            self.splash.showMessage(f"Starting synth voice {synth_count+1}...", 
+                                  Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, 
+                                  Qt.GlobalColor.white)
+            self.app.processEvents()
+            
+            # Launch local synth
+            cmd = [synth_path, '-port', str(port)]
+            LOG.info(f"Launching local synth {vid} on port {port}")
+            
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                self.synth_processes.append(proc)
+                
+                threading.Thread(
+                    target=monitor_process_output,
+                    args=(proc, f"synth_{vid}"),
+                    daemon=True
+                ).start()
+                
+                LOG.info(f"Synth process {vid} spawned with PID: {proc.pid}")
+                synth_count += 1
+                time.sleep(0.5)  # Give each synth time to start up
+            except Exception as e:
+                LOG.error(f"Failed to spawn synth process {vid}: {e}")
+                LOG.error(f"Command was: {' '.join(cmd)}")
+        
+        LOG.info(f"Launched {synth_count} synth processes")
+            
+    def closeEvent(self, event) -> None:
+        """
+        Handle window close event.
+        
+        Args:
+            event: Close event
+        """
+        LOG.info("Closing Caelus application")
+        
+        # Kill synth processes
+        kill_synth_processes(self.synth_processes)
+        
+        # Stop the router
+        if self.router:
+            self.router.stop()
+            
+        # Accept the close event
+        event.accept()
+    
     def run(self) -> int:
         """
         Run the application.
@@ -264,6 +422,9 @@ class CaelusLauncher:
         
         # Start GUI
         self.start_gui()
+        
+        # Set up a cleanup handler for the main window
+        self.main_window.closeEvent = self.closeEvent
         
         # Run the event loop
         return self.app.exec()
@@ -301,6 +462,19 @@ def main() -> int:
     
     # Create and run launcher
     launcher = CaelusLauncher(args)
+    
+    # Set up signal handlers for graceful shutdown
+    def signal_handler(sig, frame):
+        print("\nShutting down Caelus...")
+        kill_synth_processes(launcher.synth_processes)
+        if hasattr(launcher, 'router') and launcher.router:
+            launcher.router.stop()
+        sys.exit(0)
+        
+    # Register signal handlers for clean shutdown with Ctrl+C
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     return launcher.run()
 
 if __name__ == "__main__":
