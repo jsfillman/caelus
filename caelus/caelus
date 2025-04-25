@@ -326,7 +326,8 @@ class CaelusLauncher:
         """
         import subprocess
         import threading
-        from lib.core.utils import LOG, monitor_process_output
+        from lib.core.utils import LOG
+        from lib.midi_osc.helpers import monitor_process_output
         
         synth_path = bank_config['synth_file']
         voices_config = bank_config['config']

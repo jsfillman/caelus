@@ -8,7 +8,7 @@ import traceback
 import functools
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, cast
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 # Type variable for decorator functions
 F = TypeVar('F', bound=Callable[..., Any])

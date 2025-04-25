@@ -17,7 +17,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from lib.osc_bridge.voice import Voice
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 def load_voices_config(config_file):
     """Load voice configuration from YAML file"""

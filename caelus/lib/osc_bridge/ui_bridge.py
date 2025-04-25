@@ -3,7 +3,7 @@ UIBridge - Manages bidirectional communication with UI clients via OSC.
 """
 from typing import Optional, Any
 from pythonosc import udp_client
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class UIBridge:
     """

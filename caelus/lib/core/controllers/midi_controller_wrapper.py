@@ -9,11 +9,11 @@ import time
 from PyQt6.QtCore import QObject
 from pythonosc import udp_client
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.midi_osc.midi_controller import MidiController
 from lib.midi_osc.midi_worker import MidiWorker
 from lib.midi_osc.helpers import send_osc
-from ui.signals.signal_handlers import UISignalHandler
+from lib.ui.signals.signal_handlers import UISignalHandler
 
 class MidiControllerWrapper(QObject):
     """

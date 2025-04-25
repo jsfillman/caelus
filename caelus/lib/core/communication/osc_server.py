@@ -11,8 +11,8 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 
-from lib.common.utils import LOG
-from ui.signals.signal_handlers import OSCSignalHandler
+from lib.core.utils import LOG
+from lib.ui.signals.signal_handlers import OSCSignalHandler
 
 class OSCServerThread(threading.Thread):
     """

@@ -12,11 +12,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QTimer, pyqtSignal as Signal
 
-from lib.common.utils import LOG
-from core.controllers.midi_controller_wrapper import MidiControllerWrapper
-from ui.tabs.base_tab import BaseTab
-from ui.widgets.activity_light import ActivityLight
-from ui.widgets.status_display import StatusDisplay
+from lib.core.utils import LOG
+from lib.core.controllers.midi_controller_wrapper import MidiControllerWrapper
+from lib.ui.tabs.base_tab import BaseTab
+from lib.ui.widgets.activity_light import ActivityLight
+from lib.ui.widgets.status_display import StatusDisplay
 
 class MidiTab(BaseTab):
     """

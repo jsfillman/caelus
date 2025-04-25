@@ -132,7 +132,7 @@ The codebase is organized into several modular components, each with a single re
 
 ```
 lib/
-  ├── common/        # Shared utilities and constants
+  ├── core/        # Shared utilities and constants
   ├── midi_osc/      # MIDI to OSC bridge components
   └── osc_bridge/    # OSC routing system
       ├── router.py       # Main router implementation
@@ -192,7 +192,7 @@ If you're experiencing issues with OSC communication between components (no soun
 
 The system's logging level can be increased to DEBUG for more detailed information:
 
-1. Edit `lib/common/utils.py` to change:
+1. Edit `lib/core/utils.py` to change:
    ```python
    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
    ```

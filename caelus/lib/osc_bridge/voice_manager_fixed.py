@@ -10,7 +10,7 @@ This version has enhanced error handling and debugging for voice allocation issu
 import logging
 from typing import Dict, List, Set, Optional, Any, Tuple
 
-from lib.common.utils import LOG, midi_to_freq
+from lib.core.utils import LOG, midi_to_freq
 from lib.osc_bridge.voice import Voice
 
 # Set up extra debug logging

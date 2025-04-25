@@ -7,7 +7,7 @@ This module provides classes for managing voice allocation in a polyphonic synth
 """
 from typing import Dict, List, Set, Optional, Any, Tuple
 
-from lib.common.utils import LOG, midi_to_freq
+from lib.core.utils import LOG, midi_to_freq
 from lib.osc_bridge.voice import Voice
 
 

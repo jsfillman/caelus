@@ -13,7 +13,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import ThreadingOSCUDPServer
 from pythonosc import udp_client
 
-from lib.common.utils import LOG, DEFAULT_ROUTER_PORT, DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME
+from lib.core.utils import LOG, DEFAULT_ROUTER_PORT, DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME
 from lib.osc_bridge.voice import Voice
 from lib.osc_bridge.voice_manager import VoiceManager
 from lib.osc_bridge.config_loader import ConfigLoader

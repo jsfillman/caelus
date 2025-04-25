@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal as Signal, QObject
 from PyQt6.QtGui import QFont
 
-from lib.common.utils import set_app_icon, LOG
+from lib.core.utils import set_app_icon, LOG
 from pythonosc import udp_client
 
 # Default OSC settings for communicating with the router

@@ -11,10 +11,10 @@ from typing import Dict, List, Any, Optional, Callable, Union
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
 from pythonosc import udp_client
 
-from lib.common.utils import LOG
-from lib.common.patch_controller import PatchController
+from lib.core.utils import LOG
+from lib.core.patch_controller import PatchController
 from lib.midi_osc.helpers import send_osc
-from utils.logger import log_osc_message, CaelusLogger
+from lib.utils.logger import log_osc_message, CaelusLogger
 
 class PatchControllerWrapper(QObject):
     """

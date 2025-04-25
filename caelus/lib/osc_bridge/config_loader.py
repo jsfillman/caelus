@@ -5,7 +5,7 @@ import json
 import yaml
 from typing import Any, Dict, List, Tuple
 
-from lib.common.utils import LOG, DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME
+from lib.core.utils import LOG, DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME
 from lib.osc_bridge.voice import Voice
 
 class ConfigLoader:

@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal as Signal
 
-from lib.common.utils import LOG
-from core.controllers.patch_controller_wrapper import PatchControllerWrapper
-from ui.widgets.status_display import StatusDisplay
+from lib.core.utils import LOG
+from lib.core.controllers.patch_controller_wrapper import PatchControllerWrapper
+from lib.ui.widgets.status_display import StatusDisplay
 
 class PatchManager(QWidget):
     """

@@ -15,8 +15,8 @@ import subprocess
 import threading
 from typing import Dict, List, Optional, Any
 
-from lib.common.utils import LOG
-from lib.common.bank_manager import BankManager
+from lib.core.utils import LOG
+from lib.core.bank_manager import BankManager
 from lib.midi_osc.helpers import active_processes, kill_all_processes, monitor_process_output
 from lib.osc_bridge.router import OSCRouter
 from pythonosc import udp_client

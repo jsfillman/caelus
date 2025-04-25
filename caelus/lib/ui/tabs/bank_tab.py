@@ -11,13 +11,13 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal as Signal
 
-from lib.common.utils import LOG
-from core.controllers.bank_controller_wrapper import BankControllerWrapper
-from core.controllers.patch_controller_wrapper import PatchControllerWrapper
-from ui.tabs.base_tab import BaseTab
-from ui.widgets.status_display import StatusDisplay
-from ui.widgets.bank_selector import BankSelector
-from ui.widgets.patch_manager import PatchManager
+from lib.core.utils import LOG
+from lib.core.controllers.bank_controller_wrapper import BankControllerWrapper
+from lib.core.controllers.patch_controller_wrapper import PatchControllerWrapper
+from lib.ui.tabs.base_tab import BaseTab
+from lib.ui.widgets.status_display import StatusDisplay
+from lib.ui.widgets.bank_selector import BankSelector
+from lib.ui.widgets.patch_manager import PatchManager
 
 class BankTab(BaseTab):
     """
@@ -174,7 +174,7 @@ class BankTab(BaseTab):
     
     def _auto_load_default_bank(self) -> None:
         """Automatically load the default bank if specified."""
-        from lib.common.utils import LOG
+        from lib.core.utils import LOG
         if not self.default_bank:
             return
             

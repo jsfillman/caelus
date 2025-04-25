@@ -12,9 +12,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal as Signal
 
-from lib.common.utils import LOG
-from core.controllers.bank_controller_wrapper import BankControllerWrapper
-from ui.widgets.status_display import StatusDisplay
+from lib.core.utils import LOG
+from lib.core.controllers.bank_controller_wrapper import BankControllerWrapper
+from lib.ui.widgets.status_display import StatusDisplay
 
 class BankSelector(QWidget):
     """

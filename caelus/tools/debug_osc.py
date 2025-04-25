@@ -109,7 +109,7 @@ def send_test_note(host: str, ports: List[int], synth_name: str) -> None:
             LOG.info(f"Testing note on port {port}...")
             
             # Get MIDI note to frequency conversion function
-            from lib.common.utils import midi_to_freq
+            from lib.core.utils import midi_to_freq
             
             # Send note on (middle C)
             note = 60  # Middle C

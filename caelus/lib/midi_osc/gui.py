@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QTimer, pyqtSignal as Signal, QObject
 from pythonosc import udp_client
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.midi_osc.midi_worker import MidiWorker
 from lib.midi_osc.helpers import send_osc
 

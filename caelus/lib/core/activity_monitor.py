@@ -6,7 +6,7 @@ This module provides a class for monitoring and coordinating activity indicators
 from typing import Dict, Optional, Callable
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal as Signal
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class ActivityMonitor(QObject):
     """

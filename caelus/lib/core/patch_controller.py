@@ -5,7 +5,7 @@ import os
 from typing import Any, Dict, Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 from pythonosc import udp_client
-from lib.common.bank_manager import BankManager
+from lib.core.bank_manager import BankManager
 from lib.midi_osc.helpers import send_osc
 
 class PatchController(QObject):

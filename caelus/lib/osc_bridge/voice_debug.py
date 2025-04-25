@@ -14,7 +14,7 @@ from pythonosc import udp_client
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, parent_dir)
 
-from lib.common.utils import DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME, midi_to_freq, LOG
+from lib.core.utils import DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME, midi_to_freq, LOG
 
 # Set up enhanced logging
 LOG.setLevel(logging.DEBUG)

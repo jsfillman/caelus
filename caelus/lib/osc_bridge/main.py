@@ -17,7 +17,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from lib.common.utils import LOG, DEFAULT_ROUTER_PORT
+from lib.core.utils import LOG, DEFAULT_ROUTER_PORT
 from lib.osc_bridge.router import OSCRouter
 
 

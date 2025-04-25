@@ -7,7 +7,7 @@ import sys
 import argparse
 from typing import Callable, Optional
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.midi_osc.midi_worker import MidiWorker
 from lib.midi_osc.helpers import send_osc
 from pythonosc import udp_client

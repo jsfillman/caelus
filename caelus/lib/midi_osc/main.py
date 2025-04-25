@@ -18,7 +18,7 @@ if project_root not in sys.path:
 
 from PyQt6.QtWidgets import QApplication
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.midi_osc.gui import MidiOscGui
 
 # --- Default Settings (change these if you're feeling adventurous) ---

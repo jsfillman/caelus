@@ -24,7 +24,7 @@ sys.path.insert(0, parent_dir)
 
 # Try to import from Caelus, but don't fail if not found
 try:
-    from lib.common.utils import LOG
+    from lib.core.utils import LOG
 except ImportError:
     import logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

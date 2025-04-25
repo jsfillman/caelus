@@ -2,7 +2,7 @@
 VariableManager - Manages getting and setting router variables via OSC paths.
 """
 from typing import Any, Optional
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class VariableManager:
     """

@@ -4,7 +4,7 @@ MIDI Worker thread for processing MIDI messages
 import time
 import mido
 import threading
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class MidiWorker(threading.Thread):
     """Thread for processing MIDI input messages"""

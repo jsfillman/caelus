@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Callable
 import subprocess
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal as Signal
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class ConnectivityMonitor(QObject):
     """Monitor for checking and reporting synth process connectivity."""

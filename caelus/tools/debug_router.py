@@ -18,7 +18,7 @@ from threading import Thread
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 class OSCDebugger:
     """OSC debugging tool"""

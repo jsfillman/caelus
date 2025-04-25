@@ -7,7 +7,7 @@ import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt
 
-from lib.common.utils import set_app_icon, LOG
+from lib.core.utils import set_app_icon, LOG
 
 class SynthUI(QWidget):
     """Main widget for the synth UI, can be embedded or used standalone."""

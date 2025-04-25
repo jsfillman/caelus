@@ -17,10 +17,10 @@ import atexit
 import socket
 from typing import Optional, List, Dict, Any
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.midi_osc.helpers import kill_all_processes, active_processes, monitor_process_output
 from lib.osc_bridge.router import OSCRouter
-from lib.common.bank_manager import BankManager
+from lib.core.bank_manager import BankManager
 
 # Default settings
 DEFAULT_PRESET = "00 - Simple Mono"

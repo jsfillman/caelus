@@ -7,7 +7,7 @@ living in harmony on different ports.
 from typing import Optional, Union, Any
 
 from pythonosc import udp_client
-from lib.common.utils import DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME, midi_to_freq, LOG
+from lib.core.utils import DEFAULT_SYNTH_HOST, DEFAULT_SYNTH_NAME, midi_to_freq, LOG
 
 class Voice:
     """

@@ -10,9 +10,9 @@ from typing import Dict, List, Any, Optional, Callable
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
 from pythonosc import udp_client
 
-from lib.common.utils import LOG
-from lib.common.bank_controller import BankController
-from utils.logger import log_osc_message, CaelusLogger
+from lib.core.utils import LOG
+from lib.core.bank_controller import BankController
+from lib.utils.logger import log_osc_message, CaelusLogger
 
 class BankControllerWrapper(QObject):
     """
