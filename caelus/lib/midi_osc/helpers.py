@@ -2,7 +2,7 @@
 Helper functions for the MIDI-OSC bridge
 """
 import subprocess
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 
 # Process management
 active_processes = []

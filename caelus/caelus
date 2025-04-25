@@ -29,8 +29,8 @@ project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from lib.common.utils import LOG
-from lib.common.launcher_gui import LauncherGUI
+from lib.core.utils import LOG
+from lib.core.launcher_gui import LauncherGUI
 from lib.osc_bridge.router import OSCRouter
 
 # Default settings
@@ -149,7 +149,7 @@ class CaelusLauncher:
         self.app.processEvents()
         
         # First load the default bank configuration to get the voices.yaml file
-        from lib.common.bank_manager import BankManager
+        from lib.core.bank_manager import BankManager
         
         bank_manager = BankManager(self.args.presets)
         
@@ -326,7 +326,7 @@ class CaelusLauncher:
         """
         import subprocess
         import threading
-        from lib.midi_osc.helpers import monitor_process_output
+        from lib.core.utils import LOG, monitor_process_output
         
         synth_path = bank_config['synth_file']
         voices_config = bank_config['config']

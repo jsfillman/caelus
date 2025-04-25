@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 
-from lib.common.utils import LOG
-from utils.module_loader import ModuleLoader
+from lib.core.utils import LOG
+from lib.utils.module_loader import ModuleLoader
 
 class MainWindow(QMainWindow):
     """Main application window for Caelus."""

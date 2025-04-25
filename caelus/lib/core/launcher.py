@@ -8,22 +8,22 @@ import sys
 import time
 from typing import Dict, List, Any, Optional
 
-from lib.common.utils import LOG
-from utils.settings import Settings
-from utils.logger import enable_osc_logging
+from lib.core.utils import LOG
+from lib.utils.settings import Settings
+from lib.utils.logger import enable_osc_logging
 
-from core.app import CaelusApp
-from core.splash import SplashManager
-from core.connectivity import ConnectivityMonitor
-from core.activity_monitor import ActivityMonitor
+from lib.core.app import CaelusApp
+from lib.core.splash import SplashManager
+from lib.core.connectivity import ConnectivityMonitor
+from lib.core.activity_monitor import ActivityMonitor
 
-from core.controllers.midi_controller_wrapper import MidiControllerWrapper
-from core.controllers.bank_controller_wrapper import BankControllerWrapper
-from core.controllers.patch_controller_wrapper import PatchControllerWrapper
+from lib.core.controllers.midi_controller_wrapper import MidiControllerWrapper
+from lib.core.controllers.bank_controller_wrapper import BankControllerWrapper
+from lib.core.controllers.patch_controller_wrapper import PatchControllerWrapper
 
-from ui.main_window import MainWindow
-from ui.tabs.midi_tab import MidiTab
-from ui.tabs.bank_tab import BankTab
+from lib.ui.main_window import MainWindow
+from lib.ui.tabs.midi_tab import MidiTab
+from lib.ui.tabs.bank_tab import BankTab
 
 from pythonosc import udp_client
 
@@ -122,7 +122,7 @@ class CaelusLauncher:
         from PyQt6.QtCore import QTimer
         default_bank = self.settings.get("default_bank")
         if default_bank:
-            from lib.common.utils import LOG
+            from lib.core.utils import LOG
             LOG.info(f"Setting up launcher timer to load default bank: {default_bank}")
             QTimer.singleShot(2000, self._load_default_bank)
             
@@ -190,7 +190,7 @@ class CaelusLauncher:
             bank_name: Name of the loaded bank
             bank_dir: Full path to the bank directory
         """
-        from lib.common.utils import LOG
+        from lib.core.utils import LOG
         LOG.info(f"Launcher._on_bank_loaded called with bank={bank_name}, dir={bank_dir}")
         
         # Start monitoring synth processes
@@ -212,7 +212,7 @@ class CaelusLauncher:
     
     def _load_default_bank(self) -> None:
         """Directly load the default bank from the launcher."""
-        from lib.common.utils import LOG
+        from lib.core.utils import LOG
         
         try:
             # Get default bank from settings

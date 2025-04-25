@@ -11,13 +11,13 @@ from typing import Optional, Dict, Any, List
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 
-from lib.common.utils import LOG
+from lib.core.utils import LOG
 from lib.osc_bridge.router import OSCRouter
-from lib.common.launcher_gui import LauncherGUI
+from lib.core.launcher_gui import LauncherGUI
 
-from core.splash import SplashManager
-from ui.main_window import MainWindow
-from utils.settings import Settings
+from lib.core.splash import SplashManager
+from lib.ui.main_window import MainWindow
+from lib.utils.settings import Settings
 
 class CaelusApp:
     """
