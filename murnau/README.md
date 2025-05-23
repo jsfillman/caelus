@@ -37,26 +37,54 @@ The system consists of the following core components:
 
 ## Usage
 
-1. Start the Faust synthesizer with:
+### Quick Start (Recommended)
+
+Simply run the startup script which handles everything automatically:
+
+```bash
+./start_murnau.sh
+```
+
+This script will:
+1. Start JACK audio server (with CoreAudio on macOS)
+2. Compile and start the Faust synthesizer
+3. Launch the Murnau GUI
+4. Handle cleanup when you press Ctrl+C
+
+### Manual Setup
+
+If you prefer to start components individually:
+
+1. **Start JACK audio server:**
+   ```bash
+   # macOS
+   jackd -d coreaudio -r 44100 -p 256
+   
+   # Linux
+   jackd -d alsa -r 44100 -p 256
    ```
+
+2. **Compile the Faust synthesizer:**
+   ```bash
    faust2jackconsole -osc legato_synth.dsp
+   ```
+
+3. **Start the synthesizer:**
+   ```bash
    ./legato_synth
    ```
-   This will start the synthesizer with OSC control enabled. The default OSC port is 5510.
 
-2. Launch the UI:
-   ```
+4. **Launch the UI:**
+   ```bash
    python murnau_ui.py [synth_name] [osc_port]
    ```
-   - Default synth_name: "legato_synth"
+   - Default synth_name: "legato_synth_stereo"
    - Default osc_port: 5510
 
-3. Control with MIDI:
-   - Connect a MIDI controller using the UI
-   - Or use the standalone MIDI bridge:
-   ```
-   python best_midi.py [synth_name]
-   ```
+### MIDI Control
+
+- Connect a MIDI controller using the UI's MIDI section
+- Select your MIDI device from the dropdown and click "Enable MIDI"
 
 ## MIDI Controller Mappings
 
@@ -74,11 +102,21 @@ The system consists of the following core components:
 
 ## Requirements
 
-- Python 3.6+
-- PyQt6
-- Mido (MIDI library)
-- Faust compiler (for building the synth)
-- JACK audio system
+- **Faust compiler** (for building the synthesizer DSP)
+- **JACK audio system** (for real-time audio processing)
+- **Python 3.7+** with the following packages:
+  - `PyQt6` (GUI framework)
+  - `mido` (MIDI library)
+  - `python-osc` (OSC communication)
+
+### Installation
+
+1. Install Faust from [faust.grame.fr](https://faust.grame.fr)
+2. Install JACK audio system
+3. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Acknowledgments
 
